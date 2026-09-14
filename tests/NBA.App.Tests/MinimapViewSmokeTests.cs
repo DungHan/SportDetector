@@ -3,12 +3,33 @@ using Avalonia.Headless.XUnit;
 using Avalonia.VisualTree;
 using NBA.App.ViewModels;
 using NBA.App.Views;
+using NBA.Vision;
 using Xunit;
 
 namespace NBA.App.Tests;
 
 public class MinimapViewSmokeTests
 {
+    [AvaloniaTheory]
+    [InlineData("basketball")]
+    [InlineData("soccer")]
+    [InlineData("tennis")]
+    [InlineData("american_football")]
+    public void WithDiagramSpec_RendersCourtDiagramBitmap(string sportId)
+    {
+        Assert.True(CourtDiagramRegistry.TryGet(new SportType(sportId), out var spec));
+        var viewModel = new MinimapViewModel { DiagramSpec = spec };
+        var view = new MinimapView { DataContext = viewModel };
+        var window = new Window { Content = view };
+        window.Show();
+
+        var image = view.GetVisualDescendants().OfType<Image>().FirstOrDefault();
+
+        Assert.NotNull(image);
+        Assert.NotNull(image!.Source);
+        Assert.NotNull(viewModel.CourtDiagramBitmap);
+    }
+
     [AvaloniaFact]
     public void WithoutValidCalibration_ShowsCalibratePrompt()
     {

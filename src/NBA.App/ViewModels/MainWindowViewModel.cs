@@ -113,6 +113,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     {
         SportIndicator.Current = classification;
 
+        // The diagram itself only depends on the classified sport, not on calibration - draw it as soon as a
+        // sport is known so the minimap shows the right court/field even before any calibration exists.
+        Minimap.DiagramSpec = CourtDiagramRegistry.TryGet(classification.Sport, out var diagram) ? diagram : null;
+
         // Offer reuse of a previously saved calibration for this exact source+sport pairing.
         var reused = _calibrationCoordinator.GetValidCalibration(sourceKey, classification.Sport);
         Minimap.HasValidCalibration = reused is not null;

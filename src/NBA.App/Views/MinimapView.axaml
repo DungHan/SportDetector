@@ -11,11 +11,11 @@
     <Grid RowDefinitions="*,Auto" Background="#182018">
 
         <Grid Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center">
-            <!-- Court outline, sized to the current sport's real dimensions (meters * PixelsPerMeter). -->
-            <Border Width="{Binding CourtWidthPixels}" Height="{Binding CourtHeightPixels}"
-                    BorderBrush="#E0A050" BorderThickness="2" Background="#2B4A2B" />
+            <!-- OpenCV-rendered court/field diagram for the current sport, sized to its real dimensions (meters * PixelsPerMeter). -->
+            <Image Source="{Binding CourtDiagramBitmap}"
+                   Width="{Binding CourtWidthPixels}" Height="{Binding CourtHeightPixels}" />
 
-            <TextBlock Text="Calibrate to see the court diagram"
+            <TextBlock Text="Calibrate to project markers on the diagram"
                        Foreground="#A0A0A0" HorizontalAlignment="Center" VerticalAlignment="Center"
                        IsVisible="{Binding !HasValidCalibration}" />
 
