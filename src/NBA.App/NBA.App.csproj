@@ -20,6 +20,16 @@
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 
+  <!--
+    App.axaml.cs looks for model files under <output>/models/ (GetModelsDirectory). The repo's models/ lives
+    at the solution root, not under this project, so copy its contents into the output directory rather than
+    hardcoding an absolute/relative-to-source-tree path - keeps `dotnet run`/a published build both work the
+    same way. PreserveNewest avoids re-copying the large .onnx files (100s of MB) on every unchanged build.
+  -->
+  <ItemGroup>
+    <None Include="..\..\models\*.onnx;..\..\models\*.json" CopyToOutputDirectory="PreserveNewest" Link="models\%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
     <Compile Remove="Services/CapturePlatform.Fallback.cs" />
   </ItemGroup>

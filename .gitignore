@@ -4,3 +4,7 @@ obj/
 .vs/
 .idea/
 .DS_Store
+
+# Large model weights - keep local only
+models/sport-classifier.onnx
+tools/clip-text-encoder/text_model.onnx

@@ -56,7 +56,11 @@ public sealed class SportClassificationCoordinator(
 
     private SportClassification Evaluate(SportClassifierOutput raw)
     {
-        if (raw.Confidence < confidenceThreshold)
+        // raw.Sport == Unknown is checked before the registry lookup below, not just the confidence threshold:
+        // a classifier can report Unknown confidently by design (e.g. ClipZeroShotSportClassifier's dedicated
+        // catch-all prompt for "not a sports broadcast at all" - see design.md), and Unknown itself is never a
+        // registered sport, so without this check it would incorrectly fall through to RecognizedButUnsupported.
+        if (raw.Sport == SportType.Unknown || raw.Confidence < confidenceThreshold)
         {
             return new SportClassification(SportType.Unknown, raw.Confidence, SportClassificationStatus.Unknown, IsManualOverride: false);
         }

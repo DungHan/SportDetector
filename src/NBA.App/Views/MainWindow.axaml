@@ -29,6 +29,8 @@
             <CheckBox Content="Minimap" IsChecked="{Binding Minimap.IsVisible}" />
 
             <TextBlock Text="{Binding SportIndicator.DisplayText}" VerticalAlignment="Center" Margin="16,0,0,0" />
+            <Button Content="Reclassify" Command="{Binding ReclassifyCommand}"
+                    ToolTip.Tip="Re-run automatic sport classification against the current live frame (the cached result otherwise only refreshes when you pick a different source)." />
             <ComboBox ItemsSource="{Binding SportIndicator.SelectableSports}"
                       SelectedItem="{Binding ManualCalibration.CurrentSport}"
                       Width="140" />

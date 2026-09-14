@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Windows.Input;
+using CommunityToolkit.Mvvm.Input;
 using NBA.App.Models;
 using NBA.App.Services;
 using NBA.Capture;
@@ -21,6 +23,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
 
     private string? _currentSourceKey;
     private bool _classifiedForCurrentSource;
+    private readonly RelayCommand _reclassifyCommand;
 
     public MainWindowViewModel(
         IFrameSource frameSource,
@@ -39,6 +42,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         Minimap = new MinimapViewModel();
         SportIndicator = new SportIndicatorViewModel();
         ManualCalibration = new ManualCalibrationViewModel(calibrationCoordinator);
+        _reclassifyCommand = new RelayCommand(Reclassify, () => _currentSourceKey is not null);
 
         _frameSource.FrameArrived += OnFrameArrived;
         SourcePicker.PropertyChanged += OnSourcePickerPropertyChanged;
@@ -48,6 +52,17 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             _ = SelectSourceAsync(initialSource);
         }
     }
+
+    /// <summary>
+    /// Manually re-runs the automatic classifier against the *current* live frame, bypassing the cached
+    /// per-source result - added after live testing showed classify-once-per-source-selection can go stale
+    /// within the same window/tab: content playing inside an already-selected source (e.g. a YouTube video
+    /// moving past its intro card into real gameplay) keeps whatever was classified at selection time until
+    /// something forces a fresh look, and switching away and back doesn't help when the source key (kind +
+    /// process + title) hasn't changed. <see cref="SportClassificationCoordinator.Reclassify"/> already existed
+    /// for exactly this - it just had no UI control wired to it yet.
+    /// </summary>
+    public ICommand ReclassifyCommand => _reclassifyCommand;
 
     public SourcePickerViewModel SourcePicker { get; }
 
@@ -78,6 +93,33 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         RawOverlay.SetAnnotations([]);
         Minimap.SetMarkers([]);
         Minimap.HasValidCalibration = false;
+        _reclassifyCommand.NotifyCanExecuteChanged();
+    }
+
+    private void Reclassify()
+    {
+        if (_currentSourceKey is not { } sourceKey || _frameSource.TryGetLatestFrame() is not { } frame)
+        {
+            return;
+        }
+
+        var classification = _sportCoordinator.Reclassify(
+            sourceKey,
+            new SportClassificationCoordinator.FrameSnapshot(frame.Pixels.ToArray(), frame.Width, frame.Height, frame.Stride));
+        ApplyClassification(sourceKey, classification);
+    }
+
+    private void ApplyClassification(string sourceKey, SportClassification classification)
+    {
+        SportIndicator.Current = classification;
+
+        // Offer reuse of a previously saved calibration for this exact source+sport pairing.
+        var reused = _calibrationCoordinator.GetValidCalibration(sourceKey, classification.Sport);
+        Minimap.HasValidCalibration = reused is not null;
+        if (reused is not null && CourtGeometryRegistry.TryGet(classification.Sport, out var geometry))
+        {
+            Minimap.Geometry = geometry;
+        }
     }
 
     private void OnFrameArrived(object? sender, FrameArrivedEventArgs e)
@@ -95,16 +137,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             var classification = _sportCoordinator.ClassifyOrGetCached(
                 sourceKey,
                 () => new SportClassificationCoordinator.FrameSnapshot(frame.Pixels.ToArray(), frame.Width, frame.Height, frame.Stride));
-            SportIndicator.Current = classification;
+            ApplyClassification(sourceKey, classification);
             _classifiedForCurrentSource = true;
-
-            // Offer reuse of a previously saved calibration for this exact source+sport pairing.
-            var reused = _calibrationCoordinator.GetValidCalibration(sourceKey, classification.Sport);
-            Minimap.HasValidCalibration = reused is not null;
-            if (reused is not null && CourtGeometryRegistry.TryGet(classification.Sport, out var geometry))
-            {
-                Minimap.Geometry = geometry;
-            }
         }
 
         var sport = SportIndicator.Current?.Sport;

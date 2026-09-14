@@ -74,6 +74,21 @@ public class SportClassificationCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public void ConfidentlyClassifiedAsUnknown_ReportsUnknown_NotRecognizedButUnsupported()
+    {
+        // A classifier can report Unknown *confidently* by design (e.g. a CLIP catch-all "not a sports
+        // broadcast" prompt winning) - this must not fall through to RecognizedButUnsupported just because
+        // Unknown isn't in the geometry registry.
+        var classifier = new StubClassifier(new SportClassifierOutput(SportType.Unknown, 0.97f));
+        var coordinator = new SportClassificationCoordinator(classifier, new FileSourceProfileStore(_directory));
+
+        var result = coordinator.ClassifyOrGetCached("source-1", MakeFrame);
+
+        Assert.Equal(SportType.Unknown, result.Sport);
+        Assert.Equal(SportClassificationStatus.Unknown, result.Status);
+    }
+
+    [Fact]
     public void ConfidentButUnregisteredSport_ReportsRecognizedButUnsupported_NotBasketballConfiguration()
     {
         var classifier = new StubClassifier(new SportClassifierOutput(new SportType("soccer"), 0.95f));
