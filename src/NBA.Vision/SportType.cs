@@ -9,6 +9,12 @@ public readonly record struct SportType(string Id)
 {
     public static readonly SportType Basketball = new("basketball");
 
+    public static readonly SportType Soccer = new("soccer");
+
+    public static readonly SportType Tennis = new("tennis");
+
+    public static readonly SportType AmericanFootball = new("american_football");
+
     /// <summary>Confidence was below the acceptance threshold - no sport is committed to.</summary>
     public static readonly SportType Unknown = new("unknown");
 
