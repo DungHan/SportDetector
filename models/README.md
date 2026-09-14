@@ -27,11 +27,11 @@ The corresponding **text** encoder (`text_model.onnx`, ~250MB) is deliberately *
 
 ## `player-detection.onnx`
 
-**Not yet present** — no trained model has been added to this directory yet (see `design.md`'s risk entry in `openspec/changes/add-player-detection/`). `App.axaml.cs` falls back to `NullPlayerDetector` (zero detections every frame) until this file exists.
+**Not yet present** — no trained model has been added to this directory yet. `App.axaml.cs` falls back to `NullPlayerDetector` (zero detections every frame) until this file exists.
 
-Expected/assumed signature, consumed by `OnnxPlayerDetector` (`src/NBA.Vision/OnnxPlayerDetector.cs`) once a real file is added — a YOLO-family object detector, e.g. exported from a model trained on a dataset such as [Roboflow's `basketball-players-fy4c2`](https://universe.roboflow.com/roboflow-universe-projects/basketball-players-fy4c2) (pick a YOLO-based export variant, not the RF-DETR variant, to match this convention without a postprocessing rewrite):
+Expected signature, consumed by `OnnxPlayerDetector` (`src/NBA.Vision/OnnxPlayerDetector.cs`) - **verified against a real exported model** (`yolov8n.onnx`, exported via `yolo export model=yolov8n.pt format=onnx`, the standard Ultralytics COCO-pretrained detector, not basketball-specific):
 
-- Input: `input`, shape `[1, 3, height, width]` (NCHW, RGB, values scaled to `[0, 1]`) — matches `ImagePreprocessing.ToNchwTensor`'s output exactly.
-- Output: `output`, shape `[1, N, 6]` — `(x1, y1, x2, y2, confidence, classId)` per candidate box, box coordinates normalized to `[0, 1]`.
+- Input: `images`, shape `[1, 3, 640, 640]` (NCHW, RGB, values scaled to `[0, 1]`) — matches `ImagePreprocessing.ToNchwTensor`'s output exactly (`OnnxPlayerDetector`'s `inputName`/`inputSize` defaults match this exactly).
+- Output: `output0`, shape `[1, 84, 8400]` — 4 box channels (`cx, cy, w, h`, in `[0, 640]` input-pixel space, not normalized) followed by 80 per-class confidence scores (COCO class 0 = "person"), 8400 candidate anchors, no NMS baked in.
 
-This is a **placeholder assumption**, not verified against any real exported model — common for YOLO ONNX exports, but should be checked against whatever file is actually added (`python -c "import onnx; onnx.load(...)"` to inspect the real output shape/name before wiring). `OnnxPlayerDetector` applies its own non-max suppression regardless of whether the exported model already performs it, so either an NMS-included or raw-anchor export works without a code change.
+This is the **raw Ultralytics export shape** (no `nms=True`/`end2end` variant), confirmed by loading the real file and inspecting `onnx.load(...).graph` — not a guess. `OnnxPlayerDetector` reads only the `personClassId` channel (default 0) and always applies its own non-max suppression in postprocessing, since this raw shape has none. A basketball-specific model (e.g. a YOLO-variant export from [Roboflow's `basketball-players-fy4c2`](https://universe.roboflow.com/roboflow-universe-projects/basketball-players-fy4c2)) can be dropped in later without a code change, as long as it's exported the same way (plain `yolo export ... format=onnx`, no NMS flag).

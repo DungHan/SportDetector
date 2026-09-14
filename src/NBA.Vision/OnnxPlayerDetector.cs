@@ -4,13 +4,14 @@ using NBA.Inference;
 namespace NBA.Vision;
 
 /// <summary>
-/// Player detector backed by a YOLO-style object-detection ONNX model. Assumes the model outputs a single
-/// tensor named "output" of shape [1, N, 6] - (x1, y1, x2, y2, confidence, classId) per candidate box, with
-/// box coordinates normalized to [0, 1]. NO TRAINED MODEL EXISTS YET (see design.md's risk entry in
-/// openspec/changes/add-player-detection/) - this output convention matches common YOLO ONNX export shapes
-/// and is a placeholder to revisit against whatever format the actually-adopted model uses. Non-max
-/// suppression always runs in postprocessing regardless of whether the exported model already performs it
-/// internally - a no-op on an already-deduplicated set, so this is safe either way.
+/// Player detector backed by a YOLOv8-style object-detection ONNX model - specifically the raw (no-NMS)
+/// export shape Ultralytics' own exporter produces (verified against a real `yolov8n.onnx` export: input
+/// "images" of shape [1, 3, 640, 640], output "output0" of shape [1, 4 + numClasses, numCandidates] - 4
+/// box channels (cx, cy, w, h, in the model's input-pixel coordinate space, i.e. [0, inputSize]) followed by
+/// one confidence channel per class, indexed by class - not a combined confidence+classId pair). Only the
+/// <see cref="personClassId"/> channel is read (COCO class 0, "person", for a stock COCO-pretrained export),
+/// so multi-class models work without decoding every class. Non-max suppression always runs in
+/// postprocessing, since this raw export shape has none baked in.
 /// </summary>
 public sealed class OnnxPlayerDetector : IPlayerDetector, IDisposable
 {
@@ -21,30 +22,42 @@ public sealed class OnnxPlayerDetector : IPlayerDetector, IDisposable
         int inputSize = 640,
         float confidenceThreshold = 0.5f,
         float iouThreshold = 0.45f,
-        int personClassId = 0)
+        int personClassId = 0,
+        string inputName = "images")
     {
         _pipeline = new OnnxModelPipeline<(byte[] Pixels, int Width, int Height, int Stride), IReadOnlyList<(double, double, double, double, float)>>(
             modelPath,
             preprocess: frame =>
             {
                 var tensor = ImagePreprocessing.ToNchwTensor(frame.Pixels, frame.Width, frame.Height, frame.Stride, inputSize, inputSize);
-                return [NamedOnnxValue.CreateFromTensor("input", tensor)];
+                return [NamedOnnxValue.CreateFromTensor(inputName, tensor)];
             },
             postprocess: results =>
             {
                 var output = results.First().AsTensor<float>();
+                var personChannel = 4 + personClassId;
+                var candidateCount = output.Dimensions[2];
                 var candidates = new List<(double X1, double Y1, double X2, double Y2, float Confidence)>();
 
-                for (var i = 0; i < output.Dimensions[1]; i++)
+                for (var i = 0; i < candidateCount; i++)
                 {
-                    var confidence = output[0, i, 4];
-                    var classId = (int)MathF.Round(output[0, i, 5]);
-                    if (confidence < confidenceThreshold || classId != personClassId)
+                    var confidence = output[0, personChannel, i];
+                    if (confidence < confidenceThreshold)
                     {
                         continue;
                     }
 
-                    candidates.Add((output[0, i, 0], output[0, i, 1], output[0, i, 2], output[0, i, 3], confidence));
+                    var cx = output[0, 0, i];
+                    var cy = output[0, 1, i];
+                    var w = output[0, 2, i];
+                    var h = output[0, 3, i];
+
+                    candidates.Add((
+                        (cx - (w / 2)) / inputSize,
+                        (cy - (h / 2)) / inputSize,
+                        (cx + (w / 2)) / inputSize,
+                        (cy + (h / 2)) / inputSize,
+                        confidence));
                 }
 
                 return SuppressOverlapping(candidates, iouThreshold);
