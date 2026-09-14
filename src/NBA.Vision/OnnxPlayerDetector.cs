@@ -23,7 +23,8 @@ public sealed class OnnxPlayerDetector : IPlayerDetector, IDisposable
         float confidenceThreshold = 0.5f,
         float iouThreshold = 0.45f,
         int personClassId = 0,
-        string inputName = "images")
+        string inputName = "images",
+        Action<float, int>? onDiagnostics = null)
     {
         _pipeline = new OnnxModelPipeline<(byte[] Pixels, int Width, int Height, int Stride), IReadOnlyList<(double, double, double, double, float)>>(
             modelPath,
@@ -38,14 +39,23 @@ public sealed class OnnxPlayerDetector : IPlayerDetector, IDisposable
                 var personChannel = 4 + personClassId;
                 var candidateCount = output.Dimensions[2];
                 var candidates = new List<(double X1, double Y1, double X2, double Y2, float Confidence)>();
+                var maxConfidenceSeen = 0f;
+                var aboveThresholdCount = 0;
 
                 for (var i = 0; i < candidateCount; i++)
                 {
                     var confidence = output[0, personChannel, i];
+                    if (confidence > maxConfidenceSeen)
+                    {
+                        maxConfidenceSeen = confidence;
+                    }
+
                     if (confidence < confidenceThreshold)
                     {
                         continue;
                     }
+
+                    aboveThresholdCount++;
 
                     var cx = output[0, 0, i];
                     var cy = output[0, 1, i];
@@ -59,6 +69,8 @@ public sealed class OnnxPlayerDetector : IPlayerDetector, IDisposable
                         (cy + (h / 2)) / inputSize,
                         confidence));
                 }
+
+                onDiagnostics?.Invoke(maxConfidenceSeen, aboveThresholdCount);
 
                 return SuppressOverlapping(candidates, iouThreshold);
             });

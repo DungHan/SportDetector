@@ -60,7 +60,14 @@ public partial class App : Application
             // No trained player-detection model is shipped in this change yet (see design.md's risk entries
             // in openspec/changes/add-player-detection/) - falls back to the degraded zero-detections path.
             IPlayerDetector playerDetector = File.Exists(playerDetectionModelPath)
-                ? new OnnxPlayerDetector(playerDetectionModelPath)
+                ? new OnnxPlayerDetector(
+                    playerDetectionModelPath,
+                    // TEMPORARY diagnostic (remove once real-world confidence is calibrated): logs the max
+                    // raw person-confidence seen across all 8400 candidates each frame, and how many passed
+                    // the threshold, so a "nothing renders" report can be told apart from "genuinely below
+                    // threshold" vs "always ~0, likely a wiring bug" without guessing.
+                    onDiagnostics: (maxConfidence, aboveThresholdCount) =>
+                        Console.WriteLine($"[player-detect] maxConfidence={maxConfidence:P1} aboveThreshold={aboveThresholdCount}"))
                 : new NullPlayerDetector();
 
             var mainViewModel = new MainWindowViewModel(
