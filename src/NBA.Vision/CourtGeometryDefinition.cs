@@ -1,7 +1,12 @@
 namespace NBA.Vision;
 
-/// <summary>One named, real-world court landmark, in court-space meters from the geometry's fixed origin.</summary>
-public sealed record CourtLandmark(string Name, double X, double Y);
+/// <summary>
+/// One named, real-world court landmark, in court-space meters from the geometry's fixed origin.
+/// <paramref name="KeypointIndex"/>, when set, is the position of this landmark in the court-keypoint ONNX
+/// model's fixed-order output (see <see cref="OnnxCourtKeypointDetector"/>) - null means the landmark exists
+/// only for manual calibration (a human can click it, but no model predicts it).
+/// </summary>
+public sealed record CourtLandmark(string Name, double X, double Y, int? KeypointIndex = null);
 
 /// <summary>
 /// A sport's playing-surface geometry: its named landmarks (for calibration) and real-world dimensions (for
