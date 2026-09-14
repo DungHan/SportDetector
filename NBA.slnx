@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/NBA.App/NBA.App.csproj" />
+    <Project Path="src/NBA.Capture/NBA.Capture.csproj" />
+    <Project Path="src/NBA.Inference/NBA.Inference.csproj" />
+    <Project Path="src/NBA.OCR/NBA.OCR.csproj" />
+    <Project Path="src/NBA.State/NBA.State.csproj" />
+    <Project Path="src/NBA.Tracking/NBA.Tracking.csproj" />
+    <Project Path="src/NBA.Vision/NBA.Vision.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/NBA.App.Tests/NBA.App.Tests.csproj" />
+    <Project Path="tests/NBA.Capture.Tests/NBA.Capture.Tests.csproj" />
+    <Project Path="tests/NBA.Inference.Tests/NBA.Inference.Tests.csproj" />
+    <Project Path="tests/NBA.Vision.Tests/NBA.Vision.Tests.csproj" />
+  </Folder>
+</Solution>

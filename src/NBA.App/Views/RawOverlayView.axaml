@@ -1,0 +1,33 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:NBA.App.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
+             x:Class="NBA.App.Views.RawOverlayView"
+             x:DataType="vm:RawOverlayViewModel"
+             x:Name="Root"
+             IsVisible="{Binding IsVisible}">
+
+    <Grid Background="#101010">
+        <Image Source="{Binding CurrentFrame}" Stretch="Uniform" />
+
+        <Canvas>
+            <ItemsControl ItemsSource="{Binding Visuals}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Canvas>
+                            <Ellipse Width="10" Height="10" Fill="#FF4040"
+                                     Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
+                                     RenderTransform="translate(-5px,-5px)" />
+                            <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11"
+                                       Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
+                                       RenderTransform="translate(6px,-16px)" />
+                        </Canvas>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </Canvas>
+    </Grid>
+
+</UserControl>

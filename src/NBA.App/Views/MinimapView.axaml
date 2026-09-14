@@ -1,0 +1,45 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:NBA.App.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="260"
+             x:Class="NBA.App.Views.MinimapView"
+             x:DataType="vm:MinimapViewModel"
+             IsVisible="{Binding IsVisible}">
+
+    <Grid RowDefinitions="*,Auto" Background="#182018">
+
+        <Grid Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <!-- Court outline, sized to the current sport's real dimensions (meters * PixelsPerMeter). -->
+            <Border Width="{Binding CourtWidthPixels}" Height="{Binding CourtHeightPixels}"
+                    BorderBrush="#E0A050" BorderThickness="2" Background="#2B4A2B" />
+
+            <TextBlock Text="Calibrate to see the court diagram"
+                       Foreground="#A0A0A0" HorizontalAlignment="Center" VerticalAlignment="Center"
+                       IsVisible="{Binding !HasValidCalibration}" />
+
+            <Canvas Width="{Binding CourtWidthPixels}" Height="{Binding CourtHeightPixels}"
+                    IsVisible="{Binding HasValidCalibration}">
+                <ItemsControl ItemsSource="{Binding MarkerVisuals}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Canvas>
+                                <Ellipse Width="10" Height="10" Fill="#40A0FF"
+                                         Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
+                                         RenderTransform="translate(-5px,-5px)" />
+                            </Canvas>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Canvas>
+        </Grid>
+
+        <!-- Reserved status/info panel region - placeholder text until Phase 4 (score/state) connects a real data source. -->
+        <Border Grid.Row="1" Background="#101410" Padding="8">
+            <TextBlock Text="{Binding StatusText}" Foreground="White" HorizontalAlignment="Center" />
+        </Border>
+
+    </Grid>
+
+</UserControl>

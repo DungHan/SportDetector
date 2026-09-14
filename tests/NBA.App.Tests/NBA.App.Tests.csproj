@@ -1,0 +1,35 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      This project uses xunit v3 (not v2, unlike the other test projects) because Avalonia.Headless.XUnit
+      12.1.2 depends on xunit.v3.* - xunit v3 tests run as a self-hosted executable, hence OutputType=Exe.
+    -->
+    <OutputType>Exe</OutputType>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="12.1.2" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <!-- Pinned to 3.2.2 (not the newer 4.x line) to match Avalonia.Headless.XUnit 12.1.2's xunit.v3.extensibility.core dependency exactly - 4.x changed a method signature Avalonia's discoverer binds to reflectively, causing a MissingMethodException at test discovery. -->
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NBA.App\NBA.App.csproj" />
+    <ProjectReference Include="..\..\src\NBA.Capture\NBA.Capture.csproj" />
+    <ProjectReference Include="..\..\src\NBA.Vision\NBA.Vision.csproj" />
+  </ItemGroup>
+
+</Project>

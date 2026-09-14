@@ -1,0 +1,59 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NBA.App.ViewModels"
+        xmlns:views="using:NBA.App.Views"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1000" d:DesignHeight="820"
+        x:Class="NBA.App.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Width="1000" Height="820"
+        Title="NBA Vision">
+
+    <DockPanel>
+
+        <!-- Toolbar: source selection/switching, view toggles, sport indicator + manual override, calibration controls. -->
+        <WrapPanel DockPanel.Dock="Top" Margin="8" ItemSpacing="8" LineSpacing="4">
+            <ComboBox ItemsSource="{Binding SourcePicker.Sources}"
+                      SelectedItem="{Binding SourcePicker.SelectedSource}"
+                      Width="260">
+                <ComboBox.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding DisplayName}" />
+                    </DataTemplate>
+                </ComboBox.ItemTemplate>
+            </ComboBox>
+            <Button Content="Refresh sources" Command="{Binding SourcePicker.RefreshCommand}" />
+
+            <CheckBox Content="Raw view" IsChecked="{Binding RawOverlay.IsVisible}" />
+            <CheckBox Content="Minimap" IsChecked="{Binding Minimap.IsVisible}" />
+
+            <TextBlock Text="{Binding SportIndicator.DisplayText}" VerticalAlignment="Center" Margin="16,0,0,0" />
+            <ComboBox ItemsSource="{Binding SportIndicator.SelectableSports}"
+                      SelectedItem="{Binding ManualCalibration.CurrentSport}"
+                      Width="140" />
+
+            <Button Content="Start calibration" Command="{Binding ManualCalibration.StartCommand}"
+                    IsEnabled="{Binding !ManualCalibration.IsActive}" />
+            <Button Content="Submit calibration" Command="{Binding ManualCalibration.SubmitCommand}"
+                    IsVisible="{Binding ManualCalibration.IsActive}" />
+            <Button Content="Cancel" Command="{Binding ManualCalibration.CancelCommand}"
+                    IsVisible="{Binding ManualCalibration.IsActive}" />
+            <ComboBox ItemsSource="{Binding ManualCalibration.RemainingLandmarkNames}"
+                      SelectedItem="{Binding ManualCalibration.SelectedLandmarkName}"
+                      IsVisible="{Binding ManualCalibration.IsActive}"
+                      Width="220" />
+            <TextBlock Text="{Binding ManualCalibration.ResultMessage}" Foreground="#FFB040" VerticalAlignment="Center" />
+        </WrapPanel>
+
+        <!-- Default layout: raw overlay view docked above the minimap view (dual-view-shell spec's "Default stacked layout"). -->
+        <Grid RowDefinitions="2*,4,1*">
+            <views:RawOverlayView Grid.Row="0" x:Name="RawOverlayViewControl" DataContext="{Binding RawOverlay}"
+                                   PointerPressed="OnRawOverlayPointerPressed" />
+            <GridSplitter Grid.Row="1" Height="4" Background="#333333" />
+            <views:MinimapView Grid.Row="2" x:Name="MinimapViewControl" DataContext="{Binding Minimap}" />
+        </Grid>
+
+    </DockPanel>
+
+</Window>

@@ -1,0 +1,36 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Multi-targeted on purpose (see design.md - "Capture: Windows.Graphics.Capture via a pluggable IFrameSource"):
+      the IFrameSource abstraction and shared types build for both TFMs, but the Windows.Graphics.Capture-backed
+      implementation under Windows/ only compiles into the *-windows TFM (Windows-only API surface), so the rest
+      of the solution can reference this project without pulling in a Windows-only dependency graph.
+    -->
+    <TargetFrameworks>net10.0;net10.0-windows10.0.19041.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!--
+      Lets the Windows TFM compile-check on a non-Windows dev machine (reference-assembly compile only,
+      no runtime execution). See design.md's Windows-only capture risk - this does not make capture
+      actually runnable on macOS/Linux, only compilable for review.
+    -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-windows10.0.19041.0'">
+    <Compile Remove="Windows/**/*.cs" />
+  </ItemGroup>
+
+  <!--
+    Windows.Graphics.Capture itself is an OS-provided WinRT API needing no extra package (see above), but the
+    frame-copy path (GPU surface -> CPU-readable CapturedFrame) needs a Direct3D11/DXGI device, for which
+    Vortice.Windows is the .NET binding (design.md: "Vortice.Windows or equivalent WinRT capture interop").
+    Scoped to the Windows TFM only so the mac/linux build of this project stays free of native Windows deps.
+  -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+  </ItemGroup>
+
+</Project>
