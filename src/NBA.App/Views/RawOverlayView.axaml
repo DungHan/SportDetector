@@ -12,22 +12,30 @@
     <Grid Background="#101010">
         <Image Source="{Binding CurrentFrame}" Stretch="Uniform" />
 
-        <Canvas>
-            <ItemsControl ItemsSource="{Binding Visuals}">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <Canvas>
-                            <Ellipse Width="10" Height="10" Fill="#FF4040"
-                                     Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
-                                     RenderTransform="translate(-5px,-5px)" />
-                            <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11"
-                                       Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
-                                       RenderTransform="translate(6px,-16px)" />
-                        </Canvas>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-        </Canvas>
+        <!--
+            The overlay must scale/center exactly the way the Image above does, or annotation coordinates
+            (computed in the captured frame's native pixel space) land outside the visible, scaled-down
+            picture. Sizing this inner Canvas to the frame's actual pixel dimensions and letting the Viewbox
+            apply the same Stretch="Uniform" fit makes both layers share one coordinate space.
+        -->
+        <Viewbox Stretch="Uniform">
+            <Canvas Width="{Binding CurrentFrame.PixelSize.Width}" Height="{Binding CurrentFrame.PixelSize.Height}">
+                <ItemsControl ItemsSource="{Binding Visuals}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Canvas>
+                                <Ellipse Width="10" Height="10" Fill="#FF4040"
+                                         Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
+                                         RenderTransform="translate(-5px,-5px)" />
+                                <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11"
+                                           Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
+                                           RenderTransform="translate(6px,-16px)" />
+                            </Canvas>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Canvas>
+        </Viewbox>
     </Grid>
 
 </UserControl>
