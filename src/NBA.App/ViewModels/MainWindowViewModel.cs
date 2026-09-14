@@ -20,6 +20,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly SportClassificationCoordinator _sportCoordinator;
     private readonly CourtCalibrationCoordinator _calibrationCoordinator;
     private readonly ICourtKeypointDetector _keypointDetector;
+    private readonly IPlayerDetector _playerDetector;
 
     private string? _currentSourceKey;
     private bool _classifiedForCurrentSource;
@@ -30,12 +31,14 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         ICaptureSourceEnumerator sourceEnumerator,
         SportClassificationCoordinator sportCoordinator,
         CourtCalibrationCoordinator calibrationCoordinator,
-        ICourtKeypointDetector keypointDetector)
+        ICourtKeypointDetector keypointDetector,
+        IPlayerDetector playerDetector)
     {
         _frameSource = frameSource;
         _sportCoordinator = sportCoordinator;
         _calibrationCoordinator = calibrationCoordinator;
         _keypointDetector = keypointDetector;
+        _playerDetector = playerDetector;
 
         SourcePicker = new SourcePickerViewModel(sourceEnumerator);
         RawOverlay = new RawOverlayViewModel();
@@ -131,8 +134,18 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         var frame = e.Frame;
         RawOverlay.CurrentFrame = FrameBitmapConverter.ToWriteableBitmap(frame);
 
+        // Player detection is independent of sport/calibration state (vision/player-detection spec) - it runs
+        // on every frame, unlike the sport-gated keypoint detection below. Marked at the box's bottom-center
+        // (the player's feet) rather than as a box outline - this is also the point a later change would feed
+        // into court-calibration's homography projection, since a player's court position is where they stand,
+        // not their bounding box.
+        var playerDetections = _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+        var playerAnnotations = playerDetections.Select(d =>
+            OverlayAnnotation.ForPoint((d.Left + d.Right) / 2, d.Bottom, $"{d.Confidence:P0}"));
+
         if (_currentSourceKey is not { } sourceKey)
         {
+            RawOverlay.SetAnnotations(playerAnnotations);
             return;
         }
 
@@ -148,11 +161,12 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         var sport = SportIndicator.Current?.Sport;
         if (sport is null || SportIndicator.Current!.Status != SportClassificationStatus.Confident)
         {
+            RawOverlay.SetAnnotations(playerAnnotations);
             return;
         }
 
         var keypoints = _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-        RawOverlay.SetAnnotations(keypoints.Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName)));
+        RawOverlay.SetAnnotations(playerAnnotations.Concat(keypoints.Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName))));
 
         var calibration = _calibrationCoordinator.GetValidCalibration(sourceKey, sport.Value);
         if (calibration is null)

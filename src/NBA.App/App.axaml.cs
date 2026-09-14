@@ -26,6 +26,7 @@ public partial class App : Application
             var sportClassifierModelPath = Path.Combine(GetModelsDirectory(), "sport-classifier.onnx");
             var sportPromptsPath = Path.Combine(GetModelsDirectory(), "sport-classifier-prompts.clip.json");
             var keypointModelPath = Path.Combine(GetModelsDirectory(), "court-keypoints.basketball.onnx");
+            var playerDetectionModelPath = Path.Combine(GetModelsDirectory(), "player-detection.onnx");
 
             // No trained keypoint model is shipped in this change yet (see design.md's risk entries) - fall
             // back to the degraded/manual-only path rather than failing to start. The sport classifier now has
@@ -56,12 +57,19 @@ public partial class App : Application
                 ? new OnnxCourtKeypointDetector(keypointModelPath, BasketballGeometryDefinition())
                 : new NullCourtKeypointDetector(SportType.Basketball);
 
+            // No trained player-detection model is shipped in this change yet (see design.md's risk entries
+            // in openspec/changes/add-player-detection/) - falls back to the degraded zero-detections path.
+            IPlayerDetector playerDetector = File.Exists(playerDetectionModelPath)
+                ? new OnnxPlayerDetector(playerDetectionModelPath)
+                : new NullPlayerDetector();
+
             var mainViewModel = new MainWindowViewModel(
                 CapturePlatform.CreateFrameSource(),
                 CapturePlatform.CreateSourceEnumerator(),
                 new SportClassificationCoordinator(sportClassifier, profileStore),
                 new CourtCalibrationCoordinator(profileStore),
-                keypointDetector);
+                keypointDetector,
+                playerDetector);
 
             desktop.MainWindow = new MainWindow
             {
