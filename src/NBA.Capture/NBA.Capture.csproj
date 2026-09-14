@@ -23,6 +23,15 @@
   </ItemGroup>
 
   <!--
+    Mac/ (CoreGraphics-backed IFrameSource/ICaptureSourceEnumerator - see design.md's Mac capture discussion)
+    is macOS-specific P/Invoke with no reason to ship in the Windows-targeted build; it lives in the same
+    net10.0 TFM as the Fake* testing backend, with NBA.App picking between them at runtime via OperatingSystem.IsMacOS().
+  -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
+    <Compile Remove="Mac/**/*.cs" />
+  </ItemGroup>
+
+  <!--
     Windows.Graphics.Capture itself is an OS-provided WinRT API needing no extra package (see above), but the
     frame-copy path (GPU surface -> CPU-readable CapturedFrame) needs a Direct3D11/DXGI device, for which
     Vortice.Windows is the .NET binding (design.md: "Vortice.Windows or equivalent WinRT capture interop").
