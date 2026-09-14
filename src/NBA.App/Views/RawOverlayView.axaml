@@ -19,7 +19,7 @@
             apply the same Stretch="Uniform" fit makes both layers share one coordinate space.
         -->
         <Viewbox Stretch="Uniform">
-            <Canvas Width="{Binding CurrentFrame.PixelSize.Width}" Height="{Binding CurrentFrame.PixelSize.Height}">
+            <Canvas x:Name="OverlayCanvas">
                 <ItemsControl ItemsSource="{Binding Visuals}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
