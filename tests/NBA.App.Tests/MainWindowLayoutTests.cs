@@ -23,7 +23,8 @@ public class MainWindowLayoutTests : IDisposable
             new FakeCaptureSourceEnumerator([SourceA]),
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
-            new NullCourtKeypointDetector(SportType.Basketball));
+            new NullCourtKeypointDetector(SportType.Basketball),
+            new NullPlayerDetector());
     }
 
     [AvaloniaFact]
