@@ -6,6 +6,6 @@ obj/
 .DS_Store
 
 # Large model weights - keep local only
-models/sport-classifier.onnx
-models/court-keypoints.basketball.onnx
+models/
+!models/README.md
 tools/clip-text-encoder/text_model.onnx
