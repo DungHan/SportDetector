@@ -1,0 +1,58 @@
+## Context
+
+Builds on pieces already established elsewhere in the codebase, unchanged by this design:
+
+- `CourtMarker(X, Y, Label?, StyleKey?)` and `AnnotationVisual(X, Y, Width?, Height?, Label?, StyleKey?)` (`src/NBA.App/Models/`), flattened from `CourtMarker` by `MinimapViewModel.SetMarkers` (`src/NBA.App/ViewModels/MinimapViewModel.cs:89`).
+- `MinimapView.axaml`'s marker `Ellipse.Fill` is bound through `MarkerStyleToBrushConverter` (`src/NBA.App/Converters/MarkerStyleToBrushConverter.cs`), which today switches on `StyleKey` alone: `"player"` → a single fixed color (`#F2F2F2`), anything else → the keypoint color (`#40A0FF`).
+- `tracking/player-tracking`'s `IPlayerTracker.Update(...)` shape: reports only currently-live tracks, no explicit termination event; `MainWindowViewModel`/the minimap already infer a track's termination purely from its ID's absence between one frame's `Update(...)` result and the next (same inference the planned `ocr/jersey-number-recognition` vote aggregator also relies on).
+- `MainWindowViewModel.ProcessFrameArrived` (`src/NBA.App/ViewModels/MainWindowViewModel.cs:156`) already computes `trackedPlayers` unconditionally (independent of sport/calibration state), and further down, in the calibrated branch, builds `playerMarkers` styled `"player"` (lines 220-225) that get concatenated into one `Minimap.SetMarkers(...)` call.
+- The detector interface + implementation pattern (`IPlayerDetector`/`NullPlayerDetector`/`OnnxPlayerDetector` in `src/NBA.Vision`) that this and other capabilities generally follow: an interface taking a raw `bgra8Pixels` span + `width`/`height`/`stride`.
+- No crop-region pixel extraction of any kind exists yet anywhere in the codebase today — `ImagePreprocessing.ToNchwTensor` (`src/NBA.Inference`) only resizes the *full* source frame into a tensor. The `add-jersey-number-ocr` change proposes adding a crop-aware overload of that same method, but that change is itself only proposed, not implemented — this design does not depend on it (see Decisions).
+
+See proposal.md for motivation and scope.
+
+## Goals / Non-Goals
+
+**Goals:**
+
+- Define `IJerseyColorExtractor` (crop in, extracted color + confidence, or "unknown", out) with one production implementation — classical dominant-color extraction, no trained model.
+- Define a per-track color resolver that turns a stream of per-frame extracted colors into one stable resolved color per track, using the same "absence from this frame's input = terminated" signal `tracking/player-tracking` and the planned OCR vote aggregator already rely on.
+- Wire crop extraction + extraction + resolution into `MainWindowViewModel.ProcessFrameArrived`, and set the resolved color on each tracked player's `CourtMarker`/`AnnotationVisual`, read by `MinimapView.axaml`'s fill binding.
+- Make the resolver independently unit-testable with hand-constructed per-frame color sequences, no image fixture needed.
+
+**Non-Goals:**
+
+- Team assignment/grouping (clustering resolved colors into two sides) or roster matching — see proposal.md.
+- Coloring the raw-overlay box — only the minimap marker fill changes, matching `add-jersey-number-ocr`'s precedent of leaving the raw overlay untouched.
+- Camera color correction / white balance normalization — resolved colors reflect whatever the source frame's pixels already show, same posture as detection/keypoint capabilities taking frame pixels as-is.
+- Training or requiring any model asset — deliberately classical (see Decisions), so there is no "no model yet" placeholder state to design around here.
+
+## Decisions
+
+**Jersey-color extraction is classical dominant-color analysis over raw pixels, not an ONNX model.** Unlike jersey-number recognition (arbitrary digit shapes need a trained classifier) or player/keypoint detection, "what is the most common color in this region" is well-served by pixel statistics with no semantic-recognition step. This lets the change ship one real, working implementation immediately instead of a `Null`-only placeholder pending a future trained asset — a meaningfully different posture from every other detector in this codebase.
+
+**Extraction samples a fixed fractional sub-rectangle of the track's box (a "torso band"), not the full box.** The full box includes the head, shorts, shoes, and background bleed at the edges, all of which would contaminate a full-box dominant-color read. A tunable fixed fraction of box height (e.g. roughly 15%-55% from the top, full width) approximates the jersey torso area without needing pose estimation. Same "tune later against real footage" posture as other placeholder constants in this codebase (e.g. OCR's default vote threshold).
+
+**Own lightweight pixel-sampling helper in `NBA.JerseyColor`, not a dependency on `ImagePreprocessing.ToNchwTensor` or on `add-jersey-number-ocr`'s proposed crop overload.** Both this change and `add-jersey-number-ocr` are independent, currently-unimplemented proposals; taking a hard dependency on the other proposal's not-yet-real crop overload would create a hidden ordering constraint between two otherwise-independent changes. This capability also has no model to feed a resized NCHW tensor to — it only needs to iterate raw BGRA8 pixels within a sub-rectangle, clamped to `[0, width) x [0, height)` before sampling (same clamping posture as OCR's design, since a track's motion-predicted box can extend outside frame bounds during brief occlusion). If the clamped torso band collapses to zero width or height, extraction is skipped and "unknown" is returned, mirroring OCR's degenerate-crop handling.
+
+**Dominant color is the mode of a coarsely-quantized color histogram, not the arithmetic mean.** A mean pulls toward gray/washed-out when a crop contains high-contrast content (numbers, logos, shadow gradients) - a common case for a jersey torso. Quantizing each sampled pixel to a coarse bucket (e.g. 5 bits per channel) and taking the most frequent bucket is still simple, deterministic, and directly unit-testable against synthetic crops (a majority-color region plus noise pixels) without needing real photos.
+
+**Per-track resolution is distance-based cluster-with-threshold, not exact-match plurality voting (OCR's discrete-domain solution) and not a plain exponential moving average.** Colors are continuous, so "agreement" means samples falling within a color-distance threshold of each other, not exact equality. `IJerseyColorResolver.Update(IReadOnlyList<(int TrackId, JerseyColorExtractionResult Result)>)` (mirroring the planned `IJerseyNumberVoteAggregator.Update`'s per-frame shape) buckets each track's non-unknown samples by proximity, and reports a resolved color for a track once its largest bucket reaches a minimum sample count (constructor parameter, default e.g. 5 - same threshold-as-constructor-parameter convention used throughout this codebase), using that bucket's running average as the resolved value. Recomputing the winning bucket fresh each call (rather than locking in a one-time decision) means a resolved color is only displaced once a different color cluster actually outgrows the current one - deliberately not a plain EMA, which would let transient noise (e.g. a passing shadow) slowly drag the resolved color without ever requiring it to dominate.
+
+**Termination drops a track's accumulated samples entirely, with no separate termination event** - any track ID absent from a call's input is removed from internal state, identical in shape to the planned OCR vote aggregator and consistent with how `tracking/player-tracking` and the minimap already infer track lifetime.
+
+**No `Null`-object implementation, unlike every other detector in this codebase.** `NullPlayerDetector`/`NullCourtKeypointDetector`/(planned) `NullJerseyNumberRecognizer` exist to degrade gracefully when a *trained model file* is missing. This capability has no trained-model dependency, so there is no missing-asset state to degrade from - a degenerate or unsampleable crop is handled per-call (returns "unknown"), not by swapping in a whole different implementation at startup. `IJerseyColorExtractor` remains an interface purely for testability (a stub implementation in `MainWindowViewModelTests`, mirroring the existing `StubPlayerTracker` pattern), not because a null-object variant is needed in production.
+
+**`CourtMarker`/`AnnotationVisual` gain a new nullable `Color` field (resolved hex string) rather than encoding color into `StyleKey`.** `StyleKey` today is a small closed set of marker-kind strings ("player" / null / future "keypoint") driving a switch in `MarkerStyleToBrushConverter`; embedding an arbitrary per-track RGB value into that same string would muddy its "what kind of marker" meaning and require parsing a compound string back out in the converter. A separate `Color` field keeps `StyleKey` as "marker kind" and `Color` as "resolved paint," independently nullable. A `DataTemplateSelector` (a structurally different template per marker kind) was considered and rejected for the same reason `add-player-minimap-projection`'s design already rejected it: only fill color varies, not marker structure.
+
+**`MinimapView.axaml`'s `Ellipse.Fill` becomes a `MultiBinding` over `(Color, StyleKey)`, resolved by extending `MarkerStyleToBrushConverter` into an `IMultiValueConverter`.** When `Color` is non-null, parse and return it directly; otherwise fall back to the existing `StyleKey` switch, unchanged. Keypoint markers never carry a `Color`, so their rendering is provably unaffected. Kept as one converter class (rather than two chained converters) since the fallback logic is one cohesive rule, not two independent concerns.
+
+**Recognition (extraction + resolution) runs unconditionally alongside tracking, before the sport/calibration gates**, in the same `ProcessFrameArrived` region `trackedPlayers` is already computed in - not gated behind a valid calibration. This lets color samples warm up from the moment a track exists, so a resolved color is already available the moment calibration completes and the minimap starts plotting markers, matching the posture `add-jersey-number-ocr`'s design already took for the same reason.
+
+## Risks / Trade-offs
+
+- [Fixed torso sub-rectangle is a rough heuristic] → unusual poses, camera angles, or heavy occlusion can sample background or skin instead of jersey fabric; acceptable for a first version, the fraction is a tunable constant, not blocking without real footage to tune against.
+- [Histogram-mode dominant color can pick a large printed number/logo's color instead of the base jersey fabric color on a small/low-resolution crop] → accepted for v1; a future refinement could weight sampling toward the crop's edges/margins or enlarge the sampled region.
+- [No team-assignment/grouping in this change] → two players on the same team can show slightly different marker colors (lighting, angle) since nothing clusters resolved colors together; acceptable, this change's requirement is "reflect the extracted color," not "assign one of two team colors."
+- [Per-track extraction runs every frame for every tracked player] → cheap pixel-iteration work (no model inference), unlike the OCR capability's per-track ONNX call, so no "measure once a real model exists" caveat is needed here - still worth noting as one more per-tracked-player unit of work alongside detection/tracking/(eventually) OCR.
+- [No color-space correction] → resolved colors depend entirely on the source video's white balance/broadcast grading; two teams with visually similar broadcast colors (e.g. both wearing white) will resolve to similar marker colors. Accepted - same "take frame pixels as given" posture already taken by detection and keypoint capabilities.
