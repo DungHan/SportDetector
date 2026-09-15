@@ -7,6 +7,7 @@ using NBA.App.Services;
 using NBA.Capture;
 using NBA.OCR;
 using NBA.State;
+using NBA.Tracking;
 using NBA.Vision;
 
 namespace NBA.App.ViewModels;
@@ -24,6 +25,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly CourtCalibrationCoordinator _calibrationCoordinator;
     private readonly ICourtKeypointDetector _keypointDetector;
     private readonly IPlayerDetector _playerDetector;
+    private readonly IPlayerTracker _playerTracker;
     private readonly IScoreboardOcrEngine _scoreboardOcr;
     private readonly ISourceProfileStore _profileStore;
     private readonly GameStateTracker _gameStateTracker = new();
@@ -40,6 +42,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         CourtCalibrationCoordinator calibrationCoordinator,
         ICourtKeypointDetector keypointDetector,
         IPlayerDetector playerDetector,
+        IPlayerTracker playerTracker,
         IScoreboardOcrEngine scoreboardOcr,
         ISourceProfileStore profileStore)
     {
@@ -48,6 +51,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _calibrationCoordinator = calibrationCoordinator;
         _keypointDetector = keypointDetector;
         _playerDetector = playerDetector;
+        _playerTracker = playerTracker;
         _scoreboardOcr = scoreboardOcr;
         _profileStore = profileStore;
 
@@ -103,6 +107,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _currentSourceKey = SourceIdentity.DeriveKey(source);
         _classifiedForCurrentSource = false;
         ManualCalibration.SourceKey = _currentSourceKey;
+
+        // Track IDs are only meaningful within one continuous view of a source - an unrelated source switch
+        // must not carry stale identities into a scene the tracker never saw (tracking/player-tracking spec).
+        _playerTracker.Reset();
 
         RawOverlay.SetAnnotations([]);
         Minimap.SetMarkers([]);
@@ -161,8 +169,12 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             playerDetections = [];
         }
 
-        var playerAnnotations = playerDetections
-            .Select(d => OverlayAnnotation.ForBox(d.Left, d.Top, d.Right, d.Bottom, $"{d.Confidence:P0}"))
+        // Detections are fed through the tracker to attach a stable track ID per player (tracking/player-tracking
+        // spec) before rendering, so the same physical player keeps the same box/ID across frames instead of an
+        // unlabeled per-frame foot-point.
+        var trackedPlayers = _playerTracker.Update(playerDetections);
+        var playerAnnotations = trackedPlayers
+            .Select(t => OverlayAnnotation.ForBox(t.Left, t.Top, t.Right, t.Bottom, $"#{t.TrackId}"))
             .ToList();
 
         // This handler runs synchronously on MacFrameSource's background polling thread, not the UI thread
@@ -242,7 +254,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         }
 
         var keypointAnnotations = keypoints
-            .Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName))
+            .Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName, "keypoint"))
             .ToList();
 
         var calibration = _calibrationCoordinator.GetValidCalibration(sourceKey, sport.Value);
@@ -251,11 +263,25 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         if (calibration is not null)
         {
             CourtGeometryRegistry.TryGet(sport.Value, out currentGeometry);
-            markers = keypoints.Select(k =>
+
+            var keypointMarkers = keypoints.Select(k =>
             {
                 var court = PointProjector.Project(calibration, k.Position);
                 return new CourtMarker(court.X, court.Y, k.LandmarkName);
-            }).ToList();
+            });
+
+            // Foot point (bottom-center of the box) rather than the box itself - the minimap plots a single
+            // court-space position per player, not an area (dual-view-shell spec's "Minimap plots tracked
+            // players' court positions"). Styled "player" so MinimapView.axaml renders it distinctly from the
+            // unstyled keypoint markers above, now that both appear on the same diagram.
+            var playerMarkers = trackedPlayers.Select(t =>
+            {
+                var footPoint = new ImagePoint((t.Left + t.Right) / 2, t.Bottom);
+                var court = PointProjector.Project(calibration, footPoint);
+                return new CourtMarker(court.X, court.Y, $"#{t.TrackId}", "player");
+            });
+
+            markers = keypointMarkers.Concat(playerMarkers).ToList();
         }
 
         Dispatcher.UIThread.Post(() =>

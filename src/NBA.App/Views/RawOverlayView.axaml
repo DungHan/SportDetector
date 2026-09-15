@@ -52,9 +52,23 @@
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <Canvas>
+                                <!-- Court keypoints (StyleKey="keypoint") get a bold X so they read clearly against
+                                     the video; everything else (player boxes) keeps the plain dot marker. -->
+                                <Path Data="M -8,-8 L 8,8 M 8,-8 L -8,8"
+                                      Stroke="#FF0000" StrokeThickness="4" StrokeLineCap="Round"
+                                      Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
+                                      IsVisible="{Binding StyleKey, Converter={x:Static conv:ObjectConverters.Equal}, ConverterParameter=keypoint}" />
+                                <!-- Plain point marker: excludes keypoints (which already get the X marker above)
+                                     to avoid double-rendering, and excludes boxes (which get the Rectangle below). -->
                                 <Ellipse Width="10" Height="10" Fill="#FF4040"
-                                         IsVisible="{Binding Width, Converter={x:Static conv:ObjectConverters.IsNull}}"
-                                         RenderTransform="translate(-5px,-5px)" />
+                                         RenderTransform="translate(-5px,-5px)">
+                                    <Ellipse.IsVisible>
+                                        <MultiBinding Converter="{x:Static conv:BoolConverters.And}">
+                                            <Binding Path="Width" Converter="{x:Static conv:ObjectConverters.IsNull}" />
+                                            <Binding Path="StyleKey" Converter="{x:Static conv:ObjectConverters.NotEqual}" ConverterParameter="keypoint" />
+                                        </MultiBinding>
+                                    </Ellipse.IsVisible>
+                                </Ellipse>
                                 <Rectangle Width="{Binding Width}" Height="{Binding Height}"
                                            Stroke="#FF4040" StrokeThickness="2"
                                            IsVisible="{Binding Width, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />

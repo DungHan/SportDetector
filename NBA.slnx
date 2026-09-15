@@ -14,6 +14,7 @@
     <Project Path="tests/NBA.Inference.Tests/NBA.Inference.Tests.csproj" />
     <Project Path="tests/NBA.OCR.Tests/NBA.OCR.Tests.csproj" />
     <Project Path="tests/NBA.State.Tests/NBA.State.Tests.csproj" />
+    <Project Path="tests/NBA.Tracking.Tests/NBA.Tracking.Tests.csproj" />
     <Project Path="tests/NBA.Vision.Tests/NBA.Vision.Tests.csproj" />
   </Folder>
 </Solution>

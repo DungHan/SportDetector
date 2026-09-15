@@ -1,6 +1,9 @@
 using Avalonia.Controls;
+using Avalonia.Controls.Shapes;
 using Avalonia.Headless.XUnit;
+using Avalonia.Media;
 using Avalonia.VisualTree;
+using NBA.App.Models;
 using NBA.App.ViewModels;
 using NBA.App.Views;
 using NBA.Vision;
@@ -58,6 +61,24 @@ public class MinimapViewSmokeTests
 
         Assert.NotNull(prompt);
         Assert.False(prompt!.IsVisible);
+    }
+
+    [AvaloniaFact]
+    public void PlayerMarker_RendersWithDistinctFillFromKeypointMarker()
+    {
+        var viewModel = new MinimapViewModel { HasValidCalibration = true };
+        viewModel.SetMarkers([
+            new CourtMarker(1, 1, "Landmark"),
+            new CourtMarker(2, 2, "#7", "player"),
+        ]);
+        var view = new MinimapView { DataContext = viewModel };
+        var window = new Window { Content = view };
+        window.Show();
+
+        var fills = view.GetVisualDescendants().OfType<Ellipse>().Select(e => ((SolidColorBrush)e.Fill!).Color).ToList();
+
+        Assert.Contains(Color.Parse("#40A0FF"), fills); // unstyled keypoint marker keeps its existing color
+        Assert.Contains(Color.Parse("#F2F2F2"), fills); // "player"-styled marker gets a distinct color
     }
 
     [AvaloniaFact]

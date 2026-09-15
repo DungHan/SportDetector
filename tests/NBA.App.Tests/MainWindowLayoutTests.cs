@@ -5,6 +5,7 @@ using NBA.App.Views;
 using NBA.Capture;
 using NBA.Capture.Testing;
 using NBA.OCR;
+using NBA.Tracking;
 using NBA.Vision;
 using Xunit;
 
@@ -26,6 +27,7 @@ public class MainWindowLayoutTests : IDisposable
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             new NullPlayerDetector(),
+            new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store);
     }
