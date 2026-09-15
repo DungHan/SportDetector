@@ -141,7 +141,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private void OnFrameArrived(object? sender, FrameArrivedEventArgs e)
     {
         var frame = e.Frame;
-
+        
         // WriteableBitmap creation must happen on the UI thread. If we're on a capture thread,
         // dispatch to the UI thread. Use Background priority to avoid starving UI interactions.
         if (!Dispatcher.UIThread.CheckAccess())
@@ -207,12 +207,24 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                 Minimap.Geometry = currentGeometry;
             }
 
-            var markers = keypoints.Select(k =>
+            var keypointMarkers = keypoints.Select(k =>
             {
                 var court = PointProjector.Project(calibration, k.Position);
                 return new CourtMarker(court.X, court.Y, k.LandmarkName);
             });
-            Minimap.SetMarkers(markers);
+
+            // Foot point (bottom-center of the box) rather than the box itself - the minimap plots a single
+            // court-space position per player, not an area (dual-view-shell spec's "Minimap plots tracked
+            // players' court positions"). Styled "player" so MinimapView.axaml renders it distinctly from the
+            // unstyled keypoint markers above, now that both appear on the same diagram.
+            var playerMarkers = trackedPlayers.Select(t =>
+            {
+                var footPoint = new ImagePoint((t.Left + t.Right) / 2, t.Bottom);
+                var court = PointProjector.Project(calibration, footPoint);
+                return new CourtMarker(court.X, court.Y, $"#{t.TrackId}", "player");
+            });
+
+            Minimap.SetMarkers(keypointMarkers.Concat(playerMarkers));
         }
         catch
         {

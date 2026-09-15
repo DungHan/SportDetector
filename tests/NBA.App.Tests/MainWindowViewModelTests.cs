@@ -156,8 +156,8 @@ public class MainWindowViewModelTests : IDisposable
         // session - proves the "offer reuse" path (spec's "Persist and reuse calibration per source") and
         // that both views update concurrently from one frame (spec's "Both views can run concurrently").
         var store = new FileSourceProfileStore(_directory);
-        var sourceKey = "Window:processA";
-        new CourtCalibrationCoordinator(store).ManualCalibrate(sourceKey, SportType.Basketball, KnownCorrespondences());
+        var sourceKey = "Window:processA:Source A"; // must match SourceIdentity.DeriveKey(SourceA)'s Kind:ProcessName:DisplayName format
+        var calibrationResult = new CourtCalibrationCoordinator(store).ManualCalibrate(sourceKey, SportType.Basketball, KnownCorrespondences());
 
         var frameSource = new FakeFrameSource();
         var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
@@ -176,11 +176,71 @@ public class MainWindowViewModelTests : IDisposable
 
         Assert.True(viewModel.Minimap.HasValidCalibration);
         Assert.Equal(keypoints.Count + 1, viewModel.RawOverlay.Annotations.Count);
-        Assert.Equal(keypoints.Count, viewModel.Minimap.Markers.Count);
+        Assert.Equal(keypoints.Count + 1, viewModel.Minimap.Markers.Count); // keypoint markers + one player marker
 
         var trackAnnotation = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "#1");
         Assert.Equal(OverlayShapeKind.Box, trackAnnotation.Shape);
         Assert.Equal([(1.0, 2.0), (3.0, 4.0)], trackAnnotation.Points); // the detected+tracked player's box
+
+        // Foot point of the box above ((1,2)-(3,4)) is its bottom-center, (2, 4).
+        var expectedFootPoint = PointProjector.Project(calibrationResult.Calibration!, new ImagePoint(2, 4));
+        var playerMarker = Assert.Single(viewModel.Minimap.Markers, m => m.StyleKey == "player");
+        Assert.Equal("#1", playerMarker.Label);
+        Assert.Equal(expectedFootPoint.X, playerMarker.X, precision: 6);
+        Assert.Equal(expectedFootPoint.Y, playerMarker.Y, precision: 6);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_WhenTrackDisappears_MinimapDropsBackToJustKeypointMarkers()
+    {
+        var store = new FileSourceProfileStore(_directory);
+        var sourceKey = "Window:processA:Source A"; // must match SourceIdentity.DeriveKey(SourceA)
+        new CourtCalibrationCoordinator(store).ManualCalibrate(sourceKey, SportType.Basketball, KnownCorrespondences());
+
+        var frameSource = new FakeFrameSource();
+        var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
+        var playerTracker = new StubPlayerTracker { Tracks = [new TrackedPlayer(1, 0, 0, 2, 2, 0.9f)] };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store),
+            new StubKeypointDetector(keypoints),
+            new StubPlayerDetector(),
+            playerTracker);
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Assert.True(viewModel.Minimap.HasValidCalibration);
+        Assert.Equal(keypoints.Count + 1, viewModel.Minimap.Markers.Count); // keypoint markers + the one live track
+
+        playerTracker.Tracks = [];
+        frameSource.PublishFrame(MakeFrame());
+
+        Assert.Equal(keypoints.Count, viewModel.Minimap.Markers.Count); // player marker gone, keypoint markers remain
+        Assert.DoesNotContain(viewModel.Minimap.Markers, m => m.StyleKey == "player");
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_WithoutValidCalibration_AddsNoPlayerMarkersToMinimap()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var playerTracker = new StubPlayerTracker { Tracks = [new TrackedPlayer(1, 0, 0, 2, 2, 0.9f)] };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store), // no calibration ever saved for this source
+            new StubKeypointDetector([]),
+            new StubPlayerDetector(),
+            playerTracker);
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+
+        Assert.False(viewModel.Minimap.HasValidCalibration);
+        Assert.Empty(viewModel.Minimap.Markers);
     }
 
     [AvaloniaFact]
@@ -312,7 +372,7 @@ public class MainWindowViewModelTests : IDisposable
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
         var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
-        new CourtCalibrationCoordinator(store).ManualCalibrate("Window:processA", SportType.Basketball, KnownCorrespondences());
+        new CourtCalibrationCoordinator(store).ManualCalibrate("Window:processA:Source A", SportType.Basketball, KnownCorrespondences()); // must match SourceIdentity.DeriveKey(SourceA)
 
         await using var viewModel = new MainWindowViewModel(
             frameSource,
@@ -333,7 +393,7 @@ public class MainWindowViewModelTests : IDisposable
         Assert.Empty(viewModel.RawOverlay.Annotations);
         Assert.Empty(viewModel.Minimap.Markers);
         Assert.False(viewModel.Minimap.HasValidCalibration); // source B has no saved calibration under its own key
-        Assert.Equal("Window:processB", viewModel.ManualCalibration.SourceKey);
+        Assert.Equal("Window:processB:Source B", viewModel.ManualCalibration.SourceKey); // must match SourceIdentity.DeriveKey(SourceB)
     }
 
     public void Dispose()

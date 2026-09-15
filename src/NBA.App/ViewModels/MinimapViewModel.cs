@@ -86,7 +86,7 @@ public partial class MinimapViewModel : ViewModelBase
         foreach (var marker in markers)
         {
             Markers.Add(marker);
-            MarkerVisuals.Add(new AnnotationVisual(marker.X * PixelsPerMeter, marker.Y * PixelsPerMeter, null, null, marker.Label));
+            MarkerVisuals.Add(new AnnotationVisual(marker.X * PixelsPerMeter, marker.Y * PixelsPerMeter, null, null, marker.Label, marker.StyleKey));
         }
     }
 
