@@ -9,8 +9,9 @@ namespace NBA.Tracking;
 /// unmatched after that first round - recovering tracks through brief occlusion/motion blur instead of dropping
 /// them, unlike SORT-family trackers that discard low-confidence boxes outright. Low-confidence detections never
 /// spawn new tracks. Unmatched tracks are kept alive (at their motion-predicted position) for up to
-/// <paramref name="maxLostFrames"/> consecutive frame-steps before being terminated; terminated track IDs are
-/// never reused. There is no missing-model degraded path here (unlike <c>IPlayerDetector</c>/<c>ICourtKeypointDetector</c>) -
+/// <paramref name="maxLostFrames"/> consecutive <see cref="Update"/> calls (i.e. detection attempts, not raw
+/// captured frames - see <see cref="PredictOnly"/>) before being terminated; terminated track IDs are never
+/// reused. There is no missing-model degraded path here (unlike <c>IPlayerDetector</c>/<c>ICourtKeypointDetector</c>) -
 /// this is a pure algorithm over already-in-memory boxes, so this is the only <see cref="IPlayerTracker"/> implementation.
 /// </summary>
 public sealed class ByteTrackPlayerTracker(
@@ -28,11 +29,7 @@ public sealed class ByteTrackPlayerTracker(
 
         // Advance every existing track's motion model by one frame-step before any association. Default to
         // reporting the predicted box; ApplyMatch overwrites LastBox for whichever tracks get matched below.
-        foreach (var track in _tracks)
-        {
-            track.PredictedBox = track.Predictor.Predict();
-            track.LastBox = track.PredictedBox;
-        }
+        AdvancePredictions();
 
         var highDetectionIndices = new List<int>();
         var lowDetectionIndices = new List<int>();
@@ -96,6 +93,30 @@ public sealed class ByteTrackPlayerTracker(
         return _tracks
             .Select(t => new TrackedPlayer(t.Id, t.LastBox.Left, t.LastBox.Top, t.LastBox.Right, t.LastBox.Bottom, t.LastConfidence))
             .ToList();
+    }
+
+    /// <summary>
+    /// Advances every live track's motion model by one frame-step and reports the resulting boxes, without
+    /// running detection association, without aging <c>LostFrames</c>, and without spawning or terminating
+    /// tracks - the counterpart to <see cref="Update"/> for a frame on which detection was not attempted (see
+    /// tracking/player-tracking spec's "Advance motion prediction without detection").
+    /// </summary>
+    public IReadOnlyList<TrackedPlayer> PredictOnly()
+    {
+        AdvancePredictions();
+
+        return _tracks
+            .Select(t => new TrackedPlayer(t.Id, t.LastBox.Left, t.LastBox.Top, t.LastBox.Right, t.LastBox.Bottom, t.LastConfidence))
+            .ToList();
+    }
+
+    private void AdvancePredictions()
+    {
+        foreach (var track in _tracks)
+        {
+            track.PredictedBox = track.Predictor.Predict();
+            track.LastBox = track.PredictedBox;
+        }
     }
 
     public void Reset() => _tracks.Clear();

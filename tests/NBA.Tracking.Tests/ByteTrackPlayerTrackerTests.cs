@@ -105,4 +105,75 @@ public class ByteTrackPlayerTrackerTests
 
         Assert.NotEqual(terminatedId, laterTrack.TrackId);
     }
+
+    [Fact]
+    public void PredictOnly_LiveTrack_MovesTowardPredictedPositionKeepingSameId()
+    {
+        var tracker = new ByteTrackPlayerTracker();
+
+        var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        var trackId = Assert.Single(first).TrackId;
+
+        // Establish a rightward velocity so the motion model has something to extrapolate.
+        tracker.Update([Box(2, 0, 12, 10, 0.9f)]);
+        tracker.Update([Box(4, 0, 14, 10, 0.9f)]);
+
+        var predicted = tracker.PredictOnly();
+        var predictedTrack = Assert.Single(predicted);
+
+        Assert.Equal(trackId, predictedTrack.TrackId);
+        Assert.True(predictedTrack.Left > 4, "expected the predicted box to keep moving right, not freeze in place");
+    }
+
+    [Fact]
+    public void PredictOnly_RepeatedlyBeyondOcclusionBuffer_DoesNotTerminateTrack()
+    {
+        const int maxLostFrames = 3;
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: maxLostFrames);
+
+        var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        var trackId = Assert.Single(first).TrackId;
+
+        for (var step = 0; step < maxLostFrames * 5; step++)
+        {
+            var result = tracker.PredictOnly();
+            var track = Assert.Single(result);
+            Assert.Equal(trackId, track.TrackId);
+        }
+    }
+
+    [Fact]
+    public void PredictOnly_NoLiveTracks_ReturnsEmptyWithoutThrowing()
+    {
+        var tracker = new ByteTrackPlayerTracker();
+
+        var result = tracker.PredictOnly();
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void Update_UnmatchedCallsStillTerminateAtOcclusionBuffer_EvenWithInterleavedPredictOnlyCalls()
+    {
+        const int maxLostFrames = 3;
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: maxLostFrames);
+
+        var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        var trackId = Assert.Single(first).TrackId;
+
+        for (var missedUpdate = 1; missedUpdate < maxLostFrames; missedUpdate++)
+        {
+            // Several PredictOnly calls between each real Update call must not affect the occlusion countdown.
+            tracker.PredictOnly();
+            tracker.PredictOnly();
+
+            var result = tracker.Update([]);
+            var track = Assert.Single(result);
+            Assert.Equal(trackId, track.TrackId);
+        }
+
+        tracker.PredictOnly();
+        var afterBuffer = tracker.Update([]);
+        Assert.Empty(afterBuffer);
+    }
 }

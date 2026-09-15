@@ -38,6 +38,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private DateTimeOffset _lastKeypointCheckAt;
     private IReadOnlyList<DetectedKeypoint> _lastKeypoints = [];
     private readonly RelayCommand _reclassifyCommand;
+    private readonly int _detectionIntervalFrames;
+    private int _frameCounter;
 
     public MainWindowViewModel(
         IFrameSource frameSource,
@@ -48,7 +50,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         IPlayerDetector playerDetector,
         IPlayerTracker playerTracker,
         IScoreboardOcrEngine scoreboardOcr,
-        ISourceProfileStore profileStore)
+        ISourceProfileStore profileStore,
+        int detectionIntervalFrames = 3)
     {
         _frameSource = frameSource;
         _sportCoordinator = sportCoordinator;
@@ -58,6 +61,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _playerTracker = playerTracker;
         _scoreboardOcr = scoreboardOcr;
         _profileStore = profileStore;
+        _detectionIntervalFrames = detectionIntervalFrames;
 
         SourcePicker = new SourcePickerViewModel(sourceEnumerator);
         RawOverlay = new RawOverlayViewModel();
@@ -116,6 +120,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         // must not carry stale identities into a scene the tracker never saw (tracking/player-tracking spec).
         _playerTracker.Reset();
 
+        // Reset alongside the tracker so a fresh source's first frame is always a real detection frame (index 0),
+        // not partway through a stale cadence cycle left over from the previous source.
+        _frameCounter = 0;
+
         RawOverlay.SetAnnotations([]);
         Minimap.SetMarkers([]);
         Minimap.HasValidCalibration = false;
@@ -157,26 +165,42 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         var frame = e.Frame;
         var bitmap = FrameBitmapConverter.ToWriteableBitmap(frame);
 
-        // Player detection is independent of sport/calibration state (vision/player-detection spec) - it runs
-        // on every frame, unlike the sport-gated keypoint detection below. Guarded because an inference
-        // failure on one frame (e.g. an unsupported ONNX op on this machine's runtime build) must not take
-        // down the capture loop that calls this handler - see MacFrameSource.PollLoopAsync, which has no
-        // catch-all of its own around FrameArrived subscribers.
-        IReadOnlyList<PlayerDetection> playerDetections;
-        try
+        // Player detection is independent of sport/calibration state (vision/player-detection spec), but only
+        // runs every `_detectionIntervalFrames`th captured frame - it's the most expensive step in this pipeline,
+        // and the tracker's own motion model (PredictOnly, below) can carry a track's position between real
+        // detections. Guarded because an inference failure on one frame (e.g. an unsupported ONNX op on this
+        // machine's runtime build) must not take down the capture loop that calls this handler - see
+        // MacFrameSource.PollLoopAsync, which has no catch-all of its own around FrameArrived subscribers.
+        var isDetectionFrame = _frameCounter % _detectionIntervalFrames == 0;
+        _frameCounter++;
+
+        IReadOnlyList<TrackedPlayer> trackedPlayers;
+        if (isDetectionFrame)
         {
-            playerDetections = _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+            IReadOnlyList<PlayerDetection> playerDetections;
+            try
+            {
+                playerDetections = _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[player-detect] detection failed for this frame, treating as none: {ex.Message}");
+                playerDetections = [];
+            }
+
+            // Detections are fed through the tracker to attach a stable track ID per player (tracking/player-tracking
+            // spec) before rendering, so the same physical player keeps the same box/ID across frames instead of an
+            // unlabeled per-frame foot-point.
+            trackedPlayers = _playerTracker.Update(playerDetections);
         }
-        catch (Exception ex)
+        else
         {
-            Console.WriteLine($"[player-detect] detection failed for this frame, treating as none: {ex.Message}");
-            playerDetections = [];
+            // No detection was attempted this frame - advance motion prediction only, so tracked boxes keep
+            // moving smoothly instead of freezing, without counting this frame against any track's occlusion
+            // buffer (tracking/player-tracking spec's "Advance motion prediction without detection").
+            trackedPlayers = _playerTracker.PredictOnly();
         }
 
-        // Detections are fed through the tracker to attach a stable track ID per player (tracking/player-tracking
-        // spec) before rendering, so the same physical player keeps the same box/ID across frames instead of an
-        // unlabeled per-frame foot-point.
-        var trackedPlayers = _playerTracker.Update(playerDetections);
         var playerAnnotations = trackedPlayers
             .Select(t => OverlayAnnotation.ForBox(t.Left, t.Top, t.Right, t.Bottom, $"#{t.TrackId}"))
             .ToList();
@@ -198,10 +222,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             return;
         }
 
-        // Scoreboard OCR is throttled to ~1Hz (unlike player detection above, which runs every frame) - it's
-        // comparatively expensive (a subprocess call on macOS - see MacVisionOcrEngine) and the scoreboard
-        // doesn't change fast enough to need per-frame updates. Guarded the same way as the detectors above so
-        // an OCR failure on one frame can't take down the capture loop.
+        // Scoreboard OCR is throttled to ~1Hz (a coarser, wall-clock-based throttle than player detection's
+        // frame-count cadence above) - it's comparatively expensive (a subprocess call on macOS - see
+        // MacVisionOcrEngine) and the scoreboard doesn't change fast enough to need per-frame updates. Guarded
+        // the same way as the detectors above so an OCR failure on one frame can't take down the capture loop.
         if (frame.Timestamp - _lastScoreboardCheckAt >= TimeSpan.FromSeconds(1))
         {
             _lastScoreboardCheckAt = frame.Timestamp;
@@ -246,10 +270,11 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             return;
         }
 
-        // Keypoint detection is throttled to ~6.7Hz (every 150ms), unlike player detection above which runs
-        // every frame - the court's keypoints only move when the camera pans/zooms/cuts, so re-running the
-        // ONNX inference on every single frame is wasted work. Between checks, the last detected keypoints are
-        // reused so the overlay/minimap don't blank out on skipped frames.
+        // Keypoint detection is throttled to ~6.7Hz (every 150ms) via a wall-clock timer, a separate cadence
+        // mechanism from player detection's frame-count-based one above - the court's keypoints only move when
+        // the camera pans/zooms/cuts, so re-running the ONNX inference on every single frame is wasted work.
+        // Between checks, the last detected keypoints are reused so the overlay/minimap don't blank out on
+        // skipped frames.
         if (frame.Timestamp - _lastKeypointCheckAt >= KeypointDetectionInterval)
         {
             _lastKeypointCheckAt = frame.Timestamp;

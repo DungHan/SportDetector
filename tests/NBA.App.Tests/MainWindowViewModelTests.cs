@@ -55,11 +55,19 @@ public class MainWindowViewModelTests : IDisposable
 
         public int UpdateCallCount { get; private set; }
 
+        public int PredictOnlyCallCount { get; private set; }
+
         public int ResetCallCount { get; private set; }
 
         public IReadOnlyList<TrackedPlayer> Update(IReadOnlyList<PlayerDetection> detections)
         {
             UpdateCallCount++;
+            return Tracks;
+        }
+
+        public IReadOnlyList<TrackedPlayer> PredictOnly()
+        {
+            PredictOnlyCallCount++;
             return Tracks;
         }
 
@@ -264,7 +272,7 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
-    public async Task FrameArrived_CallsPlayerDetectorOncePerFrame()
+    public async Task FrameArrived_WithCadenceOfOne_CallsPlayerDetectorOnEveryFrame()
     {
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
@@ -278,18 +286,19 @@ public class MainWindowViewModelTests : IDisposable
             playerDetector,
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
-            store);
+            store,
+            detectionIntervalFrames: 1);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
         Assert.Equal(1, playerDetector.CallCount);
 
         frameSource.PublishFrame(MakeFrame());
-        Assert.Equal(2, playerDetector.CallCount); // runs every frame, unlike sport classification's once-per-source caching
+        Assert.Equal(2, playerDetector.CallCount); // cadence of 1 means every frame, unlike sport classification's once-per-source caching
     }
 
     [AvaloniaFact]
-    public async Task FrameArrived_CallsPlayerTrackerUpdateOncePerFrame()
+    public async Task FrameArrived_WithCadenceOfOne_CallsPlayerTrackerUpdateOnEveryFrame()
     {
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
@@ -303,7 +312,8 @@ public class MainWindowViewModelTests : IDisposable
             new StubPlayerDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
-            store);
+            store,
+            detectionIntervalFrames: 1);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -311,6 +321,36 @@ public class MainWindowViewModelTests : IDisposable
 
         frameSource.PublishFrame(MakeFrame());
         Assert.Equal(2, playerTracker.UpdateCallCount);
+        Assert.Equal(0, playerTracker.PredictOnlyCallCount);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_WithCadenceOfThree_DetectsOnFirstFrameAndPredictsOnlyOnTheNextTwo()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var playerDetector = new StubPlayerDetector();
+        var playerTracker = new StubPlayerTracker();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            playerDetector,
+            playerTracker,
+            new NullScoreboardOcrEngine(),
+            store,
+            detectionIntervalFrames: 3);
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame()); // frame index 0 - detection frame
+        frameSource.PublishFrame(MakeFrame()); // frame index 1 - predict-only
+        frameSource.PublishFrame(MakeFrame()); // frame index 2 - predict-only
+
+        Assert.Equal(1, playerDetector.CallCount);
+        Assert.Equal(1, playerTracker.UpdateCallCount);
+        Assert.Equal(2, playerTracker.PredictOnlyCallCount);
     }
 
     [AvaloniaFact]
@@ -397,6 +437,40 @@ public class MainWindowViewModelTests : IDisposable
         await Task.Delay(50);
 
         Assert.Equal(2, playerTracker.ResetCallCount);
+    }
+
+    [AvaloniaFact]
+    public async Task SwitchingSource_MidCadenceCycle_ResetsFrameCounterSoNewSourceDetectsImmediately()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var playerDetector = new StubPlayerDetector();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA, SourceB]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            playerDetector,
+            new ByteTrackPlayerTracker(),
+            new NullScoreboardOcrEngine(),
+            store,
+            detectionIntervalFrames: 3);
+        await Task.Delay(50);
+
+        // Frame index 0 on source A: detection frame. Frame index 1: predict-only - leaves the counter
+        // mid-cycle (not back at a multiple of 3) when the source switch happens.
+        frameSource.PublishFrame(MakeFrame());
+        frameSource.PublishFrame(MakeFrame());
+        Assert.Equal(1, playerDetector.CallCount);
+
+        viewModel.SourcePicker.SelectedSource = SourceB;
+        await Task.Delay(50);
+
+        // Source B's first frame must be a real detection frame (counter reset to 0), not a predict-only
+        // frame left over from wherever source A's cycle happened to stop.
+        frameSource.PublishFrame(MakeFrame());
+        Assert.Equal(2, playerDetector.CallCount);
     }
 
     [AvaloniaFact]
