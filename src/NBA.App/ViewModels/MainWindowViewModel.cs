@@ -30,9 +30,13 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly ISourceProfileStore _profileStore;
     private readonly GameStateTracker _gameStateTracker = new();
 
+    private static readonly TimeSpan KeypointDetectionInterval = TimeSpan.FromMilliseconds(150);
+
     private string? _currentSourceKey;
     private bool _classifiedForCurrentSource;
     private DateTimeOffset _lastScoreboardCheckAt;
+    private DateTimeOffset _lastKeypointCheckAt;
+    private IReadOnlyList<DetectedKeypoint> _lastKeypoints = [];
     private readonly RelayCommand _reclassifyCommand;
 
     public MainWindowViewModel(
@@ -194,8 +198,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             return;
         }
 
-        // Scoreboard OCR is throttled to ~1Hz (unlike player/keypoint detection above, which run every frame) -
-        // it's comparatively expensive (a subprocess call on macOS - see MacVisionOcrEngine) and the scoreboard
+        // Scoreboard OCR is throttled to ~1Hz (unlike player detection above, which runs every frame) - it's
+        // comparatively expensive (a subprocess call on macOS - see MacVisionOcrEngine) and the scoreboard
         // doesn't change fast enough to need per-frame updates. Guarded the same way as the detectors above so
         // an OCR failure on one frame can't take down the capture loop.
         if (frame.Timestamp - _lastScoreboardCheckAt >= TimeSpan.FromSeconds(1))
@@ -242,17 +246,25 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             return;
         }
 
-        IReadOnlyList<DetectedKeypoint> keypoints;
-        try
+        // Keypoint detection is throttled to ~6.7Hz (every 150ms), unlike player detection above which runs
+        // every frame - the court's keypoints only move when the camera pans/zooms/cuts, so re-running the
+        // ONNX inference on every single frame is wasted work. Between checks, the last detected keypoints are
+        // reused so the overlay/minimap don't blank out on skipped frames.
+        if (frame.Timestamp - _lastKeypointCheckAt >= KeypointDetectionInterval)
         {
-            keypoints = _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[keypoint-detect] detection failed for this frame, treating as none: {ex.Message}");
-            keypoints = [];
+            _lastKeypointCheckAt = frame.Timestamp;
+            try
+            {
+                _lastKeypoints = _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[keypoint-detect] detection failed for this frame, treating as none: {ex.Message}");
+                _lastKeypoints = [];
+            }
         }
 
+        var keypoints = _lastKeypoints;
         var keypointAnnotations = keypoints
             .Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName, "keypoint"))
             .ToList();
