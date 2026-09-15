@@ -3,6 +3,7 @@ using NBA.App.Models;
 using NBA.App.ViewModels;
 using NBA.Capture;
 using NBA.Capture.Testing;
+using NBA.Tracking;
 using NBA.Vision;
 using Xunit;
 
@@ -46,6 +47,23 @@ public class MainWindowViewModelTests : IDisposable
         }
     }
 
+    private sealed class StubPlayerTracker : IPlayerTracker
+    {
+        public IReadOnlyList<TrackedPlayer> Tracks { get; set; } = [];
+
+        public int UpdateCallCount { get; private set; }
+
+        public int ResetCallCount { get; private set; }
+
+        public IReadOnlyList<TrackedPlayer> Update(IReadOnlyList<PlayerDetection> detections)
+        {
+            UpdateCallCount++;
+            return Tracks;
+        }
+
+        public void Reset() => ResetCallCount++;
+    }
+
     private static CapturedFrame MakeFrame() => new()
     {
         Width = 4,
@@ -77,7 +95,8 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector());
+            new NullPlayerDetector(),
+            new ByteTrackPlayerTracker());
 
         // Give the fire-and-forget SelectSourceAsync a chance to complete.
         await Task.Delay(50);
@@ -96,7 +115,8 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector());
+            new NullPlayerDetector(),
+            new ByteTrackPlayerTracker());
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -117,7 +137,8 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(classifier, store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector());
+            new NullPlayerDetector(),
+            new ByteTrackPlayerTracker());
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -147,7 +168,8 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new StubKeypointDetector(keypoints),
-            playerDetector);
+            playerDetector,
+            new ByteTrackPlayerTracker());
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -156,9 +178,9 @@ public class MainWindowViewModelTests : IDisposable
         Assert.Equal(keypoints.Count + 1, viewModel.RawOverlay.Annotations.Count);
         Assert.Equal(keypoints.Count, viewModel.Minimap.Markers.Count);
 
-        var footAnnotation = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "88%");
-        Assert.Equal(OverlayShapeKind.Point, footAnnotation.Shape);
-        Assert.Equal([(2.0, 4.0)], footAnnotation.Points); // bottom-center of (1,2,3,4): the detected player's feet
+        var trackAnnotation = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "#1");
+        Assert.Equal(OverlayShapeKind.Box, trackAnnotation.Shape);
+        Assert.Equal([(1.0, 2.0), (3.0, 4.0)], trackAnnotation.Points); // the detected+tracked player's box
     }
 
     [AvaloniaFact]
@@ -173,7 +195,8 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            playerDetector);
+            playerDetector,
+            new ByteTrackPlayerTracker());
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -184,53 +207,103 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
-    public async Task FrameArrived_MapsPlayerDetectionToFootPointAnnotationWithConfidenceLabel()
+    public async Task FrameArrived_CallsPlayerTrackerUpdateOncePerFrame()
     {
-        // Deliberately uses NullSportClassifier/NullCourtKeypointDetector so this exercises player detection's
-        // sport-independent path (vision/player-detection spec) without depending on calibration being reused.
-        // Marked at the bounding box's bottom-center (the player's feet), not as a box outline.
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
-        var playerDetector = new StubPlayerDetector { Detections = [new PlayerDetection(1, 2, 3, 4, 0.876f)] };
+        var playerTracker = new StubPlayerTracker();
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            playerDetector);
+            new StubPlayerDetector(),
+            playerTracker);
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Assert.Equal(1, playerTracker.UpdateCallCount);
+
+        frameSource.PublishFrame(MakeFrame());
+        Assert.Equal(2, playerTracker.UpdateCallCount);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_MapsTrackedPlayerToBoxAnnotationWithTrackIdLabel()
+    {
+        // Deliberately uses NullSportClassifier/NullCourtKeypointDetector so this exercises player
+        // tracking's sport-independent path (tracking/player-tracking spec) without depending on calibration
+        // being reused. Rendered as the track's full box, labeled with its track ID - not the previous
+        // confidence-labeled foot-point.
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var playerTracker = new StubPlayerTracker { Tracks = [new TrackedPlayer(7, 1, 2, 3, 4, 0.876f)] };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            new StubPlayerDetector(),
+            playerTracker);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
 
-        var foot = Assert.Single(viewModel.RawOverlay.Annotations);
-        Assert.Equal(OverlayShapeKind.Point, foot.Shape);
-        Assert.Equal("88%", foot.Label);
-        Assert.Equal([(2.0, 4.0)], foot.Points); // bottom-center of (1,2,3,4)
+        var box = Assert.Single(viewModel.RawOverlay.Annotations);
+        Assert.Equal(OverlayShapeKind.Box, box.Shape);
+        Assert.Equal("#7", box.Label);
+        Assert.Equal([(1.0, 2.0), (3.0, 4.0)], box.Points);
     }
 
     [AvaloniaFact]
-    public async Task FrameArrived_WithNoPlayerDetections_ProducesNoLeftoverBoxAnnotationsFromPriorFrame()
+    public async Task FrameArrived_WithNoTracks_ProducesNoLeftoverBoxAnnotationsFromPriorFrame()
     {
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
-        var playerDetector = new StubPlayerDetector { Detections = [new PlayerDetection(0, 0, 1, 1, 0.5f)] };
+        var playerTracker = new StubPlayerTracker { Tracks = [new TrackedPlayer(1, 0, 0, 1, 1, 0.9f)] };
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            playerDetector);
+            new StubPlayerDetector(),
+            playerTracker);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
         Assert.Single(viewModel.RawOverlay.Annotations);
 
-        playerDetector.Detections = [];
+        playerTracker.Tracks = [];
         frameSource.PublishFrame(MakeFrame());
 
         Assert.Empty(viewModel.RawOverlay.Annotations);
+    }
+
+    [AvaloniaFact]
+    public async Task SwitchingSource_ResetsPlayerTrackerState()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var playerTracker = new StubPlayerTracker();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA, SourceB]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            new StubPlayerDetector(),
+            playerTracker);
+        await Task.Delay(50);
+
+        Assert.Equal(1, playerTracker.ResetCallCount); // initial source selection also switches "into" source A
+
+        viewModel.SourcePicker.SelectedSource = SourceB;
+        await Task.Delay(50);
+
+        Assert.Equal(2, playerTracker.ResetCallCount);
     }
 
     [AvaloniaFact]
@@ -247,7 +320,8 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new StubKeypointDetector(keypoints),
-            new NullPlayerDetector());
+            new NullPlayerDetector(),
+            new ByteTrackPlayerTracker());
         await Task.Delay(50);
         frameSource.PublishFrame(MakeFrame());
         Assert.True(viewModel.Minimap.HasValidCalibration);

@@ -7,17 +7,29 @@ namespace NBA.App.Views;
 
 public partial class RawOverlayView : UserControl
 {
+    private RawOverlayViewModel? _currentViewModel;
+
     public RawOverlayView()
     {
         InitializeComponent();
-        DataContextChanged += (_, _) =>
+        DataContextChanged += OnDataContextChanged;
+    }
+
+    private void OnDataContextChanged(object? sender, EventArgs e)
+    {
+        // Unsubscribe from the previous ViewModel's PropertyChanged event
+        if (_currentViewModel is not null)
         {
-            if (DataContext is RawOverlayViewModel viewModel)
-            {
-                viewModel.PropertyChanged += OnViewModelPropertyChanged;
-                SyncOverlayCanvasSize(viewModel);
-            }
-        };
+            _currentViewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        }
+
+        // Subscribe to the new ViewModel's PropertyChanged event
+        if (DataContext is RawOverlayViewModel viewModel)
+        {
+            _currentViewModel = viewModel;
+            viewModel.PropertyChanged += OnViewModelPropertyChanged;
+            SyncOverlayCanvasSize(viewModel);
+        }
     }
 
     // Driven from code rather than a compiled binding path (CurrentFrame.PixelSize.Width/Height): the overlay
@@ -34,7 +46,33 @@ public partial class RawOverlayView : UserControl
     {
         if (e.PropertyName == nameof(RawOverlayViewModel.CurrentFrame) && sender is RawOverlayViewModel viewModel)
         {
-            SyncOverlayCanvasSize(viewModel);
+            // If we're not on the UI thread, dispatch to it. This can happen because FrameArrived is invoked
+            // from the capture thread (macOS CoreGraphics or Windows Graphics Capture).
+            if (!Dispatcher.UIThread.CheckAccess())
+            {
+                Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    try
+                    {
+                        SyncOverlayCanvasSize(viewModel);
+                    }
+                    catch
+                    {
+                        // Ignore failures in UI updates - don't let them stop frame capture.
+                    }
+                }, DispatcherPriority.Normal);
+            }
+            else
+            {
+                try
+                {
+                    SyncOverlayCanvasSize(viewModel);
+                }
+                catch
+                {
+                    // Ignore failures in UI updates - don't let them stop frame capture.
+                }
+            }
         }
     }
 

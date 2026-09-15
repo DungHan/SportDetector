@@ -1,9 +1,11 @@
 using System.ComponentModel;
 using System.Windows.Input;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
 using NBA.App.Models;
 using NBA.App.Services;
 using NBA.Capture;
+using NBA.Tracking;
 using NBA.Vision;
 
 namespace NBA.App.ViewModels;
@@ -21,6 +23,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly CourtCalibrationCoordinator _calibrationCoordinator;
     private readonly ICourtKeypointDetector _keypointDetector;
     private readonly IPlayerDetector _playerDetector;
+    private readonly IPlayerTracker _playerTracker;
 
     private string? _currentSourceKey;
     private bool _classifiedForCurrentSource;
@@ -32,13 +35,15 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         SportClassificationCoordinator sportCoordinator,
         CourtCalibrationCoordinator calibrationCoordinator,
         ICourtKeypointDetector keypointDetector,
-        IPlayerDetector playerDetector)
+        IPlayerDetector playerDetector,
+        IPlayerTracker playerTracker)
     {
         _frameSource = frameSource;
         _sportCoordinator = sportCoordinator;
         _calibrationCoordinator = calibrationCoordinator;
         _keypointDetector = keypointDetector;
         _playerDetector = playerDetector;
+        _playerTracker = playerTracker;
 
         SourcePicker = new SourcePickerViewModel(sourceEnumerator);
         RawOverlay = new RawOverlayViewModel();
@@ -93,6 +98,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _classifiedForCurrentSource = false;
         ManualCalibration.SourceKey = _currentSourceKey;
 
+        // Track IDs are only meaningful within one continuous view of a source - an unrelated source switch
+        // must not carry stale identities into a scene the tracker never saw (tracking/player-tracking spec).
+        _playerTracker.Reset();
+
         RawOverlay.SetAnnotations([]);
         Minimap.SetMarkers([]);
         Minimap.HasValidCalibration = false;
@@ -132,61 +141,83 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private void OnFrameArrived(object? sender, FrameArrivedEventArgs e)
     {
         var frame = e.Frame;
-        RawOverlay.CurrentFrame = FrameBitmapConverter.ToWriteableBitmap(frame);
 
-        // Player detection is independent of sport/calibration state (vision/player-detection spec) - it runs
-        // on every frame, unlike the sport-gated keypoint detection below. Marked at the box's bottom-center
-        // (the player's feet) rather than as a box outline - this is also the point a later change would feed
-        // into court-calibration's homography projection, since a player's court position is where they stand,
-        // not their bounding box.
-        var playerDetections = _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-        var playerAnnotations = playerDetections.Select(d =>
-            OverlayAnnotation.ForPoint((d.Left + d.Right) / 2, d.Bottom, $"{d.Confidence:P0}"));
-
-        if (_currentSourceKey is not { } sourceKey)
+        // WriteableBitmap creation must happen on the UI thread. If we're on a capture thread,
+        // dispatch to the UI thread. Use Background priority to avoid starving UI interactions.
+        if (!Dispatcher.UIThread.CheckAccess())
         {
-            RawOverlay.SetAnnotations(playerAnnotations);
+            Dispatcher.UIThread.Post(() => ProcessFrameArrived(frame), DispatcherPriority.Background);
             return;
         }
 
-        if (!_classifiedForCurrentSource)
+        ProcessFrameArrived(frame);
+    }
+
+    private void ProcessFrameArrived(CapturedFrame frame)
+    {
+        try
         {
-            var classification = _sportCoordinator.ClassifyOrGetCached(
-                sourceKey,
-                () => new SportClassificationCoordinator.FrameSnapshot(frame.Pixels.ToArray(), frame.Width, frame.Height, frame.Stride));
-            ApplyClassification(sourceKey, classification);
-            _classifiedForCurrentSource = true;
+            RawOverlay.CurrentFrame = FrameBitmapConverter.ToWriteableBitmap(frame);
+
+            // Player detection is independent of sport/calibration state (vision/player-detection spec) - it runs
+            // on every frame, unlike the sport-gated keypoint detection below. Detections are fed through the
+            // tracker to attach a stable track ID per player (tracking/player-tracking spec) before rendering,
+            // so the same physical player keeps the same box/ID across frames instead of an unlabeled per-frame
+            // foot-point.
+            var playerDetections = _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+            var trackedPlayers = _playerTracker.Update(playerDetections);
+            var playerAnnotations = trackedPlayers.Select(t =>
+                OverlayAnnotation.ForBox(t.Left, t.Top, t.Right, t.Bottom, $"#{t.TrackId}"));
+
+            if (_currentSourceKey is not { } sourceKey)
+            {
+                RawOverlay.SetAnnotations(playerAnnotations);
+                return;
+            }
+
+            if (!_classifiedForCurrentSource)
+            {
+                var classification = _sportCoordinator.ClassifyOrGetCached(
+                    sourceKey,
+                    () => new SportClassificationCoordinator.FrameSnapshot(frame.Pixels.ToArray(), frame.Width, frame.Height, frame.Stride));
+                ApplyClassification(sourceKey, classification);
+                _classifiedForCurrentSource = true;
+            }
+
+            var sport = SportIndicator.Current?.Sport;
+            if (sport is null || SportIndicator.Current!.Status != SportClassificationStatus.Confident)
+            {
+                RawOverlay.SetAnnotations(playerAnnotations);
+                return;
+            }
+
+            var keypoints = _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypoints.Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName))));
+
+            var calibration = _calibrationCoordinator.GetValidCalibration(sourceKey, sport.Value);
+            if (calibration is null)
+            {
+                Minimap.HasValidCalibration = false;
+                return;
+            }
+
+            Minimap.HasValidCalibration = true;
+            if (CourtGeometryRegistry.TryGet(sport.Value, out var currentGeometry))
+            {
+                Minimap.Geometry = currentGeometry;
+            }
+
+            var markers = keypoints.Select(k =>
+            {
+                var court = PointProjector.Project(calibration, k.Position);
+                return new CourtMarker(court.X, court.Y, k.LandmarkName);
+            });
+            Minimap.SetMarkers(markers);
         }
-
-        var sport = SportIndicator.Current?.Sport;
-        if (sport is null || SportIndicator.Current!.Status != SportClassificationStatus.Confident)
+        catch
         {
-            RawOverlay.SetAnnotations(playerAnnotations);
-            return;
+            // If frame processing fails, don't crash - just continue with the next frame.
         }
-
-        var keypoints = _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-        RawOverlay.SetAnnotations(playerAnnotations.Concat(keypoints.Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName))));
-
-        var calibration = _calibrationCoordinator.GetValidCalibration(sourceKey, sport.Value);
-        if (calibration is null)
-        {
-            Minimap.HasValidCalibration = false;
-            return;
-        }
-
-        Minimap.HasValidCalibration = true;
-        if (CourtGeometryRegistry.TryGet(sport.Value, out var currentGeometry))
-        {
-            Minimap.Geometry = currentGeometry;
-        }
-
-        var markers = keypoints.Select(k =>
-        {
-            var court = PointProjector.Project(calibration, k.Position);
-            return new CourtMarker(court.X, court.Y, k.LandmarkName);
-        });
-        Minimap.SetMarkers(markers);
     }
 
     public async ValueTask DisposeAsync()

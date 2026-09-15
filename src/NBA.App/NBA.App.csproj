@@ -52,6 +52,17 @@
   <ItemGroup>
     <ProjectReference Include="..\NBA.Capture\NBA.Capture.csproj" />
     <ProjectReference Include="..\NBA.Inference\NBA.Inference.csproj" />
+    <ProjectReference Include="..\NBA.Tracking\NBA.Tracking.csproj" />
     <ProjectReference Include="..\NBA.Vision\NBA.Vision.csproj" />
   </ItemGroup>
+
+  <!--
+    macOS Gatekeeper/LaunchServices can flag an unsigned apphost as "damaged" (not actually corrupt - just an
+    ad-hoc/no signature) when launched via `open` (which `dotnet run`/double-click use), especially after a
+    rebuild changes the binary. Ad-hoc signing after every build keeps the signature valid and avoids that
+    dialog. `codesign` only exists on macOS, so this is scoped to the non-Windows TFM.
+  -->
+  <Target Name="AdHocCodeSignMac" AfterTargets="Build" Condition="'$(TargetFramework)' == 'net10.0' AND '$(OS)' != 'Windows_NT'">
+    <Exec Command="codesign --force --deep --sign - &quot;$(TargetDir)$(TargetName)&quot;" />
+  </Target>
 </Project>

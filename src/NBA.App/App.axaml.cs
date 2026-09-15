@@ -6,6 +6,7 @@ using Avalonia.Markup.Xaml;
 using NBA.App.Services;
 using NBA.App.ViewModels;
 using NBA.App.Views;
+using NBA.Tracking;
 using NBA.Vision;
 
 namespace NBA.App;
@@ -70,13 +71,19 @@ public partial class App : Application
                         Console.WriteLine($"[player-detect] maxConfidence={maxConfidence:P1} aboveThreshold={aboveThresholdCount}"))
                 : new NullPlayerDetector();
 
+            // No missing-model degraded path needed here (unlike the detectors above) - ByteTrackPlayerTracker
+            // is a pure algorithm over already-in-memory boxes, not backed by an external model file (see
+            // design.md in openspec/changes/add-bytetrack-tracking/), so it's always wired.
+            IPlayerTracker playerTracker = new ByteTrackPlayerTracker();
+
             var mainViewModel = new MainWindowViewModel(
                 CapturePlatform.CreateFrameSource(),
                 CapturePlatform.CreateSourceEnumerator(),
                 new SportClassificationCoordinator(sportClassifier, profileStore),
                 new CourtCalibrationCoordinator(profileStore),
                 keypointDetector,
-                playerDetector);
+                playerDetector,
+                playerTracker);
 
             desktop.MainWindow = new MainWindow
             {
