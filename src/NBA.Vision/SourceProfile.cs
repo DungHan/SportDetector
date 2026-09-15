@@ -19,6 +19,8 @@ public sealed class SourceProfile
     /// <summary>
     /// Manual override for where the scoreboard is on screen for this source. Null means "use
     /// <see cref="NormalizedRect.DefaultScoreboardRegion"/>" - most sources never need to set this explicitly.
+    /// Normalized against <see cref="PlaybackRegion"/> once that's known (the scoreboard is part of the
+    /// broadcast, not the surrounding page), or against the full captured frame before then.
     /// </summary>
     public NormalizedRect? ScoreboardRegion { get; set; }
 

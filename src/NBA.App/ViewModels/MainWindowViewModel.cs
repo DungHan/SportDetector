@@ -270,7 +270,15 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             try
             {
                 var region = _profileStore.Load(sourceKey)?.ScoreboardRegion ?? NormalizedRect.DefaultScoreboardRegion;
-                var crop = FrameCropper.Crop(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride, region.X, region.Y, region.Width, region.Height);
+
+                // The scoreboard is part of the broadcast itself, so once the playback region is known, position
+                // it relative to that region instead of the full captured frame - region (e.g. the default's
+                // bottom-15%-of-full-width) assumes the game fills the frame, which is wrong once surrounding
+                // page chrome (YouTube UI, ...) is also inside it. playbackCrop is the same crop already computed
+                // above for player/keypoint detection.
+                var crop = playbackCrop is { } gameCrop
+                    ? FrameCropper.Crop(gameCrop.Pixels, gameCrop.Width, gameCrop.Height, gameCrop.Stride, region.X, region.Y, region.Width, region.Height)
+                    : FrameCropper.Crop(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride, region.X, region.Y, region.Width, region.Height);
                 var lines = _scoreboardOcr.Recognize(crop.Pixels, crop.Width, crop.Height, crop.Stride);
                 var reading = ScoreboardTextParser.Parse(lines, frame.Timestamp);
                 _gameStateTracker.Update(reading);

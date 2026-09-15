@@ -83,6 +83,20 @@ public class MainWindowViewModelTests : IDisposable
         public void Reset() => ResetCallCount++;
     }
 
+    private sealed class StubScoreboardOcrEngine : IScoreboardOcrEngine
+    {
+        public int LastWidth { get; private set; }
+
+        public int LastHeight { get; private set; }
+
+        public IReadOnlyList<ScoreboardOcrLine> Recognize(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride)
+        {
+            LastWidth = width;
+            LastHeight = height;
+            return [];
+        }
+    }
+
     private static CapturedFrame MakeFrame() => new()
     {
         Width = 4,
@@ -387,6 +401,49 @@ public class MainWindowViewModelTests : IDisposable
 
         var detection = Assert.Single(playerTracker.LastDetections);
         Assert.Equal(new PlayerDetection(3, 3, 4, 4, 0.9f), detection);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_WithPersistedPlaybackRegion_PositionsScoreboardOcrRelativeToThatRegion()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        store.Save(new SourceProfile
+        {
+            SourceKey = SourceIdentity.DeriveKey(SourceA),
+            PlaybackRegion = new NormalizedRect(0.25, 0.25, 0.5, 0.5),
+        });
+
+        var scoreboardOcr = new StubScoreboardOcrEngine();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            new NullPlayerDetector(),
+            new ByteTrackPlayerTracker(),
+            scoreboardOcr,
+            store,
+            new PlaybackRegionCoordinator(store));
+        await Task.Delay(50);
+
+        // Playback region (0.25, 0.25, 0.5, 0.5) of an 8x8 frame is a 4x4 crop. DefaultScoreboardRegion (bottom
+        // 15%, full width) of that 4x4 crop is a 4x1 slice - not the 8x2 slice it would be against the full
+        // frame, which is what proves the scoreboard region is positioned relative to the playback region
+        // rather than the full frame.
+        frameSource.PublishFrame(new CapturedFrame
+        {
+            Width = 8,
+            Height = 8,
+            Format = FramePixelFormat.Bgra8,
+            Stride = 32,
+            Pixels = new byte[32 * 8],
+            Timestamp = DateTimeOffset.UtcNow,
+        });
+
+        Assert.Equal(4, scoreboardOcr.LastWidth);
+        Assert.Equal(1, scoreboardOcr.LastHeight);
     }
 
     [AvaloniaFact]
