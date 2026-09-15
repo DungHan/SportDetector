@@ -192,7 +192,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             }
 
             var keypoints = _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypoints.Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName))));
+            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypoints.Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName, "keypoint"))));
 
             var calibration = _calibrationCoordinator.GetValidCalibration(sourceKey, sport.Value);
             if (calibration is null)

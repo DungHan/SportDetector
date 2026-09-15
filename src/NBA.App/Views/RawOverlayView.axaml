@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:NBA.App.ViewModels"
+             xmlns:conv="using:Avalonia.Data.Converters"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
@@ -24,9 +25,16 @@
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <Canvas>
+                                <!-- Court keypoints (StyleKey="keypoint") get a bold X so they read clearly against
+                                     the video; everything else (player boxes) keeps the plain dot marker. -->
+                                <Path Data="M -8,-8 L 8,8 M 8,-8 L -8,8"
+                                      Stroke="#FF0000" StrokeThickness="4" StrokeLineCap="Round"
+                                      Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
+                                      IsVisible="{Binding StyleKey, Converter={x:Static conv:ObjectConverters.Equal}, ConverterParameter=keypoint}" />
                                 <Ellipse Width="10" Height="10" Fill="#FF4040"
                                          Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
-                                         RenderTransform="translate(-5px,-5px)" />
+                                         RenderTransform="translate(-5px,-5px)"
+                                         IsVisible="{Binding StyleKey, Converter={x:Static conv:ObjectConverters.NotEqual}, ConverterParameter=keypoint}" />
                                 <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11"
                                            Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
                                            RenderTransform="translate(6px,-16px)" />
