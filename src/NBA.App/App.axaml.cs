@@ -76,7 +76,9 @@ public partial class App : Application
                 new SportClassificationCoordinator(sportClassifier, profileStore),
                 new CourtCalibrationCoordinator(profileStore),
                 keypointDetector,
-                playerDetector);
+                playerDetector,
+                ScoreboardOcrPlatform.CreateEngine(),
+                profileStore);
 
             desktop.MainWindow = new MainWindow
             {

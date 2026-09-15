@@ -32,9 +32,20 @@
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
     <Compile Remove="Services/CapturePlatform.Fallback.cs" />
+    <Compile Remove="Services/ScoreboardOcrPlatform.Fallback.cs" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-windows10.0.19041.0'">
     <Compile Remove="Services/CapturePlatform.Windows.cs" />
+    <Compile Remove="Services/ScoreboardOcrPlatform.Windows.cs" />
+  </ItemGroup>
+
+  <!--
+    Mac/MacVisionOcrEngine.cs compiles its Swift helper from source on first use (see that file) rather than at
+    `dotnet build` time, but the source still needs to ship next to the app - same reasoning as the .onnx models
+    copy below.
+  -->
+  <ItemGroup>
+    <None Include="..\NBA.OCR\Mac\SwiftTool\main.swift" CopyToOutputDirectory="PreserveNewest" Link="native\mac-ocr\main.swift" />
   </ItemGroup>
 
   <ItemGroup>
@@ -53,5 +64,7 @@
     <ProjectReference Include="..\NBA.Capture\NBA.Capture.csproj" />
     <ProjectReference Include="..\NBA.Inference\NBA.Inference.csproj" />
     <ProjectReference Include="..\NBA.Vision\NBA.Vision.csproj" />
+    <ProjectReference Include="..\NBA.OCR\NBA.OCR.csproj" />
+    <ProjectReference Include="..\NBA.State\NBA.State.csproj" />
   </ItemGroup>
 </Project>

@@ -30,6 +30,7 @@
     <ProjectReference Include="..\..\src\NBA.App\NBA.App.csproj" />
     <ProjectReference Include="..\..\src\NBA.Capture\NBA.Capture.csproj" />
     <ProjectReference Include="..\..\src\NBA.Vision\NBA.Vision.csproj" />
+    <ProjectReference Include="..\..\src\NBA.OCR\NBA.OCR.csproj" />
   </ItemGroup>
 
 </Project>

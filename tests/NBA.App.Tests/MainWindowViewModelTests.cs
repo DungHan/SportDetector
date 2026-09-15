@@ -1,8 +1,10 @@
 using Avalonia.Headless.XUnit;
 using NBA.App.Models;
+using NBA.App.Services;
 using NBA.App.ViewModels;
 using NBA.Capture;
 using NBA.Capture.Testing;
+using NBA.OCR;
 using NBA.Vision;
 using Xunit;
 
@@ -77,7 +79,9 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector());
+            new NullPlayerDetector(),
+            new NullScoreboardOcrEngine(),
+            store);
 
         // Give the fire-and-forget SelectSourceAsync a chance to complete.
         await Task.Delay(50);
@@ -96,10 +100,13 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector());
+            new NullPlayerDetector(),
+            new NullScoreboardOcrEngine(),
+            store);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
 
         Assert.NotNull(viewModel.RawOverlay.CurrentFrame);
         Assert.Equal(4, viewModel.RawOverlay.CurrentFrame!.PixelSize.Width);
@@ -117,12 +124,15 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(classifier, store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector());
+            new NullPlayerDetector(),
+            new NullScoreboardOcrEngine(),
+            store);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
         frameSource.PublishFrame(MakeFrame());
         frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
 
         Assert.Equal(1, classifier.CallCount);
         Assert.Equal(SportType.Basketball, viewModel.SportIndicator.Current?.Sport);
@@ -135,7 +145,7 @@ public class MainWindowViewModelTests : IDisposable
         // session - proves the "offer reuse" path (spec's "Persist and reuse calibration per source") and
         // that both views update concurrently from one frame (spec's "Both views can run concurrently").
         var store = new FileSourceProfileStore(_directory);
-        var sourceKey = "Window:processA";
+        var sourceKey = SourceIdentity.DeriveKey(SourceA);
         new CourtCalibrationCoordinator(store).ManualCalibrate(sourceKey, SportType.Basketball, KnownCorrespondences());
 
         var frameSource = new FakeFrameSource();
@@ -147,18 +157,21 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new StubKeypointDetector(keypoints),
-            playerDetector);
+            playerDetector,
+            new NullScoreboardOcrEngine(),
+            store);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
 
         Assert.True(viewModel.Minimap.HasValidCalibration);
         Assert.Equal(keypoints.Count + 1, viewModel.RawOverlay.Annotations.Count);
         Assert.Equal(keypoints.Count, viewModel.Minimap.Markers.Count);
 
-        var footAnnotation = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "88%");
-        Assert.Equal(OverlayShapeKind.Point, footAnnotation.Shape);
-        Assert.Equal([(2.0, 4.0)], footAnnotation.Points); // bottom-center of (1,2,3,4): the detected player's feet
+        var playerAnnotation = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "88%");
+        Assert.Equal(OverlayShapeKind.Box, playerAnnotation.Shape);
+        Assert.Equal([(1.0, 2.0), (3.0, 4.0)], playerAnnotation.Points); // the detected player's bounding box
     }
 
     [AvaloniaFact]
@@ -173,7 +186,9 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            playerDetector);
+            playerDetector,
+            new NullScoreboardOcrEngine(),
+            store);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -184,11 +199,10 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
-    public async Task FrameArrived_MapsPlayerDetectionToFootPointAnnotationWithConfidenceLabel()
+    public async Task FrameArrived_MapsPlayerDetectionToBoxAnnotationWithConfidenceLabel()
     {
         // Deliberately uses NullSportClassifier/NullCourtKeypointDetector so this exercises player detection's
         // sport-independent path (vision/player-detection spec) without depending on calibration being reused.
-        // Marked at the bounding box's bottom-center (the player's feet), not as a box outline.
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
         var playerDetector = new StubPlayerDetector { Detections = [new PlayerDetection(1, 2, 3, 4, 0.876f)] };
@@ -198,15 +212,18 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            playerDetector);
+            playerDetector,
+            new NullScoreboardOcrEngine(),
+            store);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
 
-        var foot = Assert.Single(viewModel.RawOverlay.Annotations);
-        Assert.Equal(OverlayShapeKind.Point, foot.Shape);
-        Assert.Equal("88%", foot.Label);
-        Assert.Equal([(2.0, 4.0)], foot.Points); // bottom-center of (1,2,3,4)
+        var box = Assert.Single(viewModel.RawOverlay.Annotations);
+        Assert.Equal(OverlayShapeKind.Box, box.Shape);
+        Assert.Equal("88%", box.Label);
+        Assert.Equal([(1.0, 2.0), (3.0, 4.0)], box.Points);
     }
 
     [AvaloniaFact]
@@ -221,14 +238,18 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            playerDetector);
+            playerDetector,
+            new NullScoreboardOcrEngine(),
+            store);
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
         Assert.Single(viewModel.RawOverlay.Annotations);
 
         playerDetector.Detections = [];
         frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
 
         Assert.Empty(viewModel.RawOverlay.Annotations);
     }
@@ -239,7 +260,7 @@ public class MainWindowViewModelTests : IDisposable
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
         var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
-        new CourtCalibrationCoordinator(store).ManualCalibrate("Window:processA", SportType.Basketball, KnownCorrespondences());
+        new CourtCalibrationCoordinator(store).ManualCalibrate(SourceIdentity.DeriveKey(SourceA), SportType.Basketball, KnownCorrespondences());
 
         await using var viewModel = new MainWindowViewModel(
             frameSource,
@@ -247,9 +268,12 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new StubKeypointDetector(keypoints),
-            new NullPlayerDetector());
+            new NullPlayerDetector(),
+            new NullScoreboardOcrEngine(),
+            store);
         await Task.Delay(50);
         frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
         Assert.True(viewModel.Minimap.HasValidCalibration);
 
         viewModel.SourcePicker.SelectedSource = SourceB;
@@ -259,7 +283,7 @@ public class MainWindowViewModelTests : IDisposable
         Assert.Empty(viewModel.RawOverlay.Annotations);
         Assert.Empty(viewModel.Minimap.Markers);
         Assert.False(viewModel.Minimap.HasValidCalibration); // source B has no saved calibration under its own key
-        Assert.Equal("Window:processB", viewModel.ManualCalibration.SourceKey);
+        Assert.Equal(SourceIdentity.DeriveKey(SourceB), viewModel.ManualCalibration.SourceKey);
     }
 
     public void Dispose()

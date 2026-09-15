@@ -1,9 +1,12 @@
 using System.ComponentModel;
 using System.Windows.Input;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
 using NBA.App.Models;
 using NBA.App.Services;
 using NBA.Capture;
+using NBA.OCR;
+using NBA.State;
 using NBA.Vision;
 
 namespace NBA.App.ViewModels;
@@ -21,9 +24,13 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly CourtCalibrationCoordinator _calibrationCoordinator;
     private readonly ICourtKeypointDetector _keypointDetector;
     private readonly IPlayerDetector _playerDetector;
+    private readonly IScoreboardOcrEngine _scoreboardOcr;
+    private readonly ISourceProfileStore _profileStore;
+    private readonly GameStateTracker _gameStateTracker = new();
 
     private string? _currentSourceKey;
     private bool _classifiedForCurrentSource;
+    private DateTimeOffset _lastScoreboardCheckAt;
     private readonly RelayCommand _reclassifyCommand;
 
     public MainWindowViewModel(
@@ -32,13 +39,17 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         SportClassificationCoordinator sportCoordinator,
         CourtCalibrationCoordinator calibrationCoordinator,
         ICourtKeypointDetector keypointDetector,
-        IPlayerDetector playerDetector)
+        IPlayerDetector playerDetector,
+        IScoreboardOcrEngine scoreboardOcr,
+        ISourceProfileStore profileStore)
     {
         _frameSource = frameSource;
         _sportCoordinator = sportCoordinator;
         _calibrationCoordinator = calibrationCoordinator;
         _keypointDetector = keypointDetector;
         _playerDetector = playerDetector;
+        _scoreboardOcr = scoreboardOcr;
+        _profileStore = profileStore;
 
         SourcePicker = new SourcePickerViewModel(sourceEnumerator);
         RawOverlay = new RawOverlayViewModel();
@@ -132,21 +143,66 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private void OnFrameArrived(object? sender, FrameArrivedEventArgs e)
     {
         var frame = e.Frame;
-        RawOverlay.CurrentFrame = FrameBitmapConverter.ToWriteableBitmap(frame);
+        var bitmap = FrameBitmapConverter.ToWriteableBitmap(frame);
 
         // Player detection is independent of sport/calibration state (vision/player-detection spec) - it runs
-        // on every frame, unlike the sport-gated keypoint detection below. Marked at the box's bottom-center
-        // (the player's feet) rather than as a box outline - this is also the point a later change would feed
-        // into court-calibration's homography projection, since a player's court position is where they stand,
-        // not their bounding box.
-        var playerDetections = _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-        var playerAnnotations = playerDetections.Select(d =>
-            OverlayAnnotation.ForPoint((d.Left + d.Right) / 2, d.Bottom, $"{d.Confidence:P0}"));
+        // on every frame, unlike the sport-gated keypoint detection below. Guarded because an inference
+        // failure on one frame (e.g. an unsupported ONNX op on this machine's runtime build) must not take
+        // down the capture loop that calls this handler - see MacFrameSource.PollLoopAsync, which has no
+        // catch-all of its own around FrameArrived subscribers.
+        IReadOnlyList<PlayerDetection> playerDetections;
+        try
+        {
+            playerDetections = _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[player-detect] detection failed for this frame, treating as none: {ex.Message}");
+            playerDetections = [];
+        }
 
+        var playerAnnotations = playerDetections
+            .Select(d => OverlayAnnotation.ForBox(d.Left, d.Top, d.Right, d.Bottom, $"{d.Confidence:P0}"))
+            .ToList();
+
+        // This handler runs synchronously on MacFrameSource's background polling thread, not the UI thread
+        // (macOS capture has no push-based callback - see MacFrameSource.PollLoopAsync). Everything above is
+        // a pure computation; everything below mutates state Avalonia's UI renders from. In particular,
+        // RawOverlay.SetAnnotations/Minimap.SetMarkers mutate ObservableCollections that the UI thread's
+        // ItemsControl may be enumerating at the same moment to render, which throws ("Collection was
+        // modified; enumeration operation may not execute") instead of merely glitching - so every mutation
+        // from here on is marshaled onto the UI thread via Dispatcher.UIThread.Post.
         if (_currentSourceKey is not { } sourceKey)
         {
-            RawOverlay.SetAnnotations(playerAnnotations);
+            Dispatcher.UIThread.Post(() =>
+            {
+                RawOverlay.CurrentFrame = bitmap;
+                RawOverlay.SetAnnotations(playerAnnotations);
+            });
             return;
+        }
+
+        // Scoreboard OCR is throttled to ~1Hz (unlike player/keypoint detection above, which run every frame) -
+        // it's comparatively expensive (a subprocess call on macOS - see MacVisionOcrEngine) and the scoreboard
+        // doesn't change fast enough to need per-frame updates. Guarded the same way as the detectors above so
+        // an OCR failure on one frame can't take down the capture loop.
+        if (frame.Timestamp - _lastScoreboardCheckAt >= TimeSpan.FromSeconds(1))
+        {
+            _lastScoreboardCheckAt = frame.Timestamp;
+            try
+            {
+                var region = _profileStore.Load(sourceKey)?.ScoreboardRegion ?? NormalizedRect.DefaultScoreboardRegion;
+                var crop = FrameCropper.Crop(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride, region.X, region.Y, region.Width, region.Height);
+                var lines = _scoreboardOcr.Recognize(crop.Pixels, crop.Width, crop.Height, crop.Stride);
+                var reading = ScoreboardTextParser.Parse(lines, frame.Timestamp);
+                _gameStateTracker.Update(reading);
+                var statusInfo = _gameStateTracker.ToStatusDictionary();
+                Dispatcher.UIThread.Post(() => Minimap.SetStatusInfo(statusInfo));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[scoreboard-ocr] recognition failed for this frame, keeping last known state: {ex.Message}");
+            }
         }
 
         if (!_classifiedForCurrentSource)
@@ -154,39 +210,69 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             var classification = _sportCoordinator.ClassifyOrGetCached(
                 sourceKey,
                 () => new SportClassificationCoordinator.FrameSnapshot(frame.Pixels.ToArray(), frame.Width, frame.Height, frame.Stride));
-            ApplyClassification(sourceKey, classification);
             _classifiedForCurrentSource = true;
+
+            // Synchronous, unlike the mutations below - ApplyClassification only ever assigns plain properties
+            // (SportIndicator.Current, Minimap.DiagramSpec/HasValidCalibration/Geometry), never touches an
+            // ObservableCollection, so it doesn't have the "enumerated while mutated" hazard those do. It must
+            // run before the `sport` read directly below, in this same call, not on a future dispatcher tick.
+            ApplyClassification(sourceKey, classification);
         }
 
         var sport = SportIndicator.Current?.Sport;
         if (sport is null || SportIndicator.Current!.Status != SportClassificationStatus.Confident)
         {
-            RawOverlay.SetAnnotations(playerAnnotations);
+            Dispatcher.UIThread.Post(() =>
+            {
+                RawOverlay.CurrentFrame = bitmap;
+                RawOverlay.SetAnnotations(playerAnnotations);
+            });
             return;
         }
 
-        var keypoints = _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-        RawOverlay.SetAnnotations(playerAnnotations.Concat(keypoints.Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName))));
+        IReadOnlyList<DetectedKeypoint> keypoints;
+        try
+        {
+            keypoints = _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[keypoint-detect] detection failed for this frame, treating as none: {ex.Message}");
+            keypoints = [];
+        }
+
+        var keypointAnnotations = keypoints
+            .Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName))
+            .ToList();
 
         var calibration = _calibrationCoordinator.GetValidCalibration(sourceKey, sport.Value);
-        if (calibration is null)
+        CourtGeometryDefinition? currentGeometry = null;
+        List<CourtMarker>? markers = null;
+        if (calibration is not null)
         {
-            Minimap.HasValidCalibration = false;
-            return;
+            CourtGeometryRegistry.TryGet(sport.Value, out currentGeometry);
+            markers = keypoints.Select(k =>
+            {
+                var court = PointProjector.Project(calibration, k.Position);
+                return new CourtMarker(court.X, court.Y, k.LandmarkName);
+            }).ToList();
         }
 
-        Minimap.HasValidCalibration = true;
-        if (CourtGeometryRegistry.TryGet(sport.Value, out var currentGeometry))
+        Dispatcher.UIThread.Post(() =>
         {
-            Minimap.Geometry = currentGeometry;
-        }
+            RawOverlay.CurrentFrame = bitmap;
+            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypointAnnotations));
 
-        var markers = keypoints.Select(k =>
-        {
-            var court = PointProjector.Project(calibration, k.Position);
-            return new CourtMarker(court.X, court.Y, k.LandmarkName);
+            Minimap.HasValidCalibration = calibration is not null;
+            if (currentGeometry is not null)
+            {
+                Minimap.Geometry = currentGeometry;
+            }
+            if (markers is not null)
+            {
+                Minimap.SetMarkers(markers);
+            }
         });
-        Minimap.SetMarkers(markers);
     }
 
     public async ValueTask DisposeAsync()

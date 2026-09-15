@@ -15,4 +15,10 @@ public sealed class SourceProfile
     public SportClassification? Sport { get; set; }
 
     public CalibrationData? Calibration { get; set; }
+
+    /// <summary>
+    /// Manual override for where the scoreboard is on screen for this source. Null means "use
+    /// <see cref="NormalizedRect.DefaultScoreboardRegion"/>" - most sources never need to set this explicitly.
+    /// </summary>
+    public NormalizedRect? ScoreboardRegion { get; set; }
 }

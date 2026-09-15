@@ -4,6 +4,7 @@ using NBA.App.ViewModels;
 using NBA.App.Views;
 using NBA.Capture;
 using NBA.Capture.Testing;
+using NBA.OCR;
 using NBA.Vision;
 using Xunit;
 
@@ -24,7 +25,9 @@ public class MainWindowLayoutTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector());
+            new NullPlayerDetector(),
+            new NullScoreboardOcrEngine(),
+            store);
     }
 
     [AvaloniaFact]

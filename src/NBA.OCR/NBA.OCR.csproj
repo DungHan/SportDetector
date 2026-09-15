@@ -1,9 +1,26 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <!--
+      Multi-targeted like NBA.Capture (see its csproj): Mac/ shells out to a standalone Swift helper (Vision
+      framework has no C API, unlike NBA.Capture.Mac's CoreGraphics use - see Mac/MacVisionOcrEngine.cs) and
+      only needs to compile in the default TFM; Windows/ uses the OS-provided Windows.Media.Ocr WinRT API and
+      only needs to compile in the Windows TFM.
+    -->
+    <TargetFrameworks>net10.0;net10.0-windows10.0.19041.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-windows10.0.19041.0'">
+    <Compile Remove="Windows/**/*.cs" />
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
+    <PackageReference Include="OpenCvSharp4.runtime.osx.arm64" Version="4.13.0.20260627" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows10.0.19041.0'">
+    <Compile Remove="Mac/**/*.cs" />
+  </ItemGroup>
 
 </Project>
