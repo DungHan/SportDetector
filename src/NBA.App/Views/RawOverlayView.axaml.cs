@@ -1,3 +1,4 @@
+using System;
 using System.ComponentModel;
 using Avalonia.Controls;
 using Avalonia.Controls.Shapes;
@@ -88,15 +89,21 @@ public partial class RawOverlayView : UserControl
         }
         else if (isBox)
         {
+            // A tracked box's corners can momentarily cross (e.g. a motion-prediction glitch when a track's
+            // two corners swap order), making Width/Height negative - Avalonia's Width/Height setters throw
+            // ArgumentException for negative values. Draw from the top-left corner regardless of which corner
+            // (X,Y) actually is, rather than assuming callers always hand us an already-normalized box.
+            var width = visual.Width!.Value;
+            var height = visual.Height!.Value;
             var rectangle = new Rectangle
             {
-                Width = visual.Width!.Value,
-                Height = visual.Height!.Value,
+                Width = Math.Abs(width),
+                Height = Math.Abs(height),
                 Stroke = new SolidColorBrush(Color.Parse("#FF4040")),
                 StrokeThickness = 2,
             };
-            Canvas.SetLeft(rectangle, visual.X);
-            Canvas.SetTop(rectangle, visual.Y);
+            Canvas.SetLeft(rectangle, width < 0 ? visual.X + width : visual.X);
+            Canvas.SetTop(rectangle, height < 0 ? visual.Y + height : visual.Y);
             yield return rectangle;
         }
         else
