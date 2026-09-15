@@ -6,6 +6,7 @@ using Avalonia.Markup.Xaml;
 using NBA.App.Services;
 using NBA.App.ViewModels;
 using NBA.App.Views;
+using NBA.JerseyOcr;
 using NBA.Tracking;
 using NBA.Vision;
 
@@ -28,6 +29,7 @@ public partial class App : Application
             var sportPromptsPath = Path.Combine(GetModelsDirectory(), "sport-classifier-prompts.clip.json");
             var keypointModelPath = Path.Combine(GetModelsDirectory(), "court-keypoints.basketball.onnx");
             var playerDetectionModelPath = Path.Combine(GetModelsDirectory(), "player-detection.onnx");
+            var jerseyNumberModelPath = Path.Combine(GetModelsDirectory(), "jersey-number.onnx");
 
             // No trained keypoint model is shipped in this change yet (see design.md's risk entries) - fall
             // back to the degraded/manual-only path rather than failing to start. The sport classifier now has
@@ -76,6 +78,15 @@ public partial class App : Application
             // design.md in openspec/changes/add-bytetrack-tracking/), so it's always wired.
             IPlayerTracker playerTracker = new ByteTrackPlayerTracker();
 
+            // No trained jersey-number recognition model is shipped in this change yet (see design.md's risk
+            // entries) - falls back to the degraded always-unrecognized path. PluralityJerseyNumberVoteAggregator
+            // is a pure algorithm over already-in-memory results, not backed by an external model file, so it's
+            // always wired unconditionally (same posture as ByteTrackPlayerTracker above).
+            IJerseyNumberRecognizer jerseyNumberRecognizer = File.Exists(jerseyNumberModelPath)
+                ? new OnnxJerseyNumberRecognizer(jerseyNumberModelPath)
+                : new NullJerseyNumberRecognizer();
+            IJerseyNumberVoteAggregator jerseyNumberVoteAggregator = new PluralityJerseyNumberVoteAggregator();
+
             var mainViewModel = new MainWindowViewModel(
                 CapturePlatform.CreateFrameSource(),
                 CapturePlatform.CreateSourceEnumerator(),
@@ -85,7 +96,9 @@ public partial class App : Application
                 playerDetector,
                 playerTracker,
                 ScoreboardOcrPlatform.CreateEngine(),
-                profileStore);
+                profileStore,
+                jerseyNumberRecognizer,
+                jerseyNumberVoteAggregator);
 
             desktop.MainWindow = new MainWindow
             {

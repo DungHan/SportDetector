@@ -4,6 +4,7 @@ using NBA.App.ViewModels;
 using NBA.App.Views;
 using NBA.Capture;
 using NBA.Capture.Testing;
+using NBA.JerseyOcr;
 using NBA.OCR;
 using NBA.Tracking;
 using NBA.Vision;
@@ -29,7 +30,9 @@ public class MainWindowLayoutTests : IDisposable
             new NullPlayerDetector(),
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
-            store);
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator());
     }
 
     [AvaloniaFact]

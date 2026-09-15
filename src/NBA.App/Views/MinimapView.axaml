@@ -34,6 +34,10 @@
                                          Fill="{Binding StyleKey, Converter={StaticResource MarkerStyleToBrushConverter}}"
                                          Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
                                          RenderTransform="translate(-5px,-5px)" />
+                                <TextBlock Text="{Binding Label}" FontSize="9" FontWeight="Bold" Foreground="White"
+                                           Width="24" TextAlignment="Center"
+                                           Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
+                                           RenderTransform="translate(-12px,-5px)" />
                             </Canvas>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>

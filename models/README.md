@@ -54,3 +54,14 @@ Expected signature, consumed by `OnnxPlayerDetector` (`src/NBA.Vision/OnnxPlayer
 - Output: `output0`, shape `[1, 84, 8400]` — 4 box channels (`cx, cy, w, h`, in `[0, 640]` input-pixel space, not normalized) followed by 80 per-class confidence scores (COCO class 0 = "person"), 8400 candidate anchors, no NMS baked in.
 
 This is the **raw Ultralytics export shape** (no `nms=True`/`end2end` variant), confirmed by loading the real file and inspecting `onnx.load(...).graph` — not a guess. `OnnxPlayerDetector` reads only the `personClassId` channel (default 0) and always applies its own non-max suppression in postprocessing, since this raw shape has none. A basketball-specific model (e.g. a YOLO-variant export from [Roboflow's `basketball-players-fy4c2`](https://universe.roboflow.com/roboflow-universe-projects/basketball-players-fy4c2)) can be dropped in later without a code change, as long as it's exported the same way (plain `yolo export ... format=onnx`, no NMS flag).
+
+## `jersey-number.onnx`
+
+**Not yet present** — no trained model has been added to this directory yet. `App.axaml.cs` falls back to `NullJerseyNumberRecognizer` (reports every track "unrecognized" every frame) until this file exists.
+
+Expected signature, consumed by `OnnxJerseyNumberRecognizer` (`src/NBA.JerseyOcr/OnnxJerseyNumberRecognizer.cs`) — per design.md's "closed-set classification, not general sequence-decoding OCR" decision, this is a fixed-class classifier, not a YOLO-style detector:
+
+- Input: `input`, shape `[1, 3, inputSize, inputSize]` (NCHW, RGB, values scaled to `[0, 1]`) — `inputSize` defaults to 64 (`OnnxJerseyNumberRecognizer`'s constructor parameter), fed a single tracked player's cropped bounding box (not the full frame) resized via `ImagePreprocessing.ToNchwTensor`'s crop-rectangle overload.
+- Output: `output0`, shape `[1, 101]` — one logit per class: classes `0`-`99` are the jersey number itself (index = the number), class `100` is "no number" (occluded, player facing away, or no jersey visible). No softmax baked in; `OnnxJerseyNumberRecognizer` takes the argmax class and computes its softmax-equivalent confidence itself, reporting "unrecognized" (`Number: null`) whenever the argmax is class 100 or its confidence falls below the configurable threshold (default 0.5).
+
+No model file is shipped in this change (same placeholder posture as `court-keypoints.basketball.onnx` and `player-detection.onnx` above) — training a real jersey-number classifier is out of scope for this change.
