@@ -144,7 +144,19 @@ public sealed class MacFrameSource : IFrameSource
 
                 consecutiveFailures = 0;
                 _buffer.Publish(frame);
-                FrameArrived?.Invoke(this, new FrameArrivedEventArgs(frame));
+
+                try
+                {
+                    FrameArrived?.Invoke(this, new FrameArrivedEventArgs(frame));
+                }
+                catch (Exception ex)
+                {
+                    // A subscriber (e.g. a detector's inference call) throwing must not kill this poll loop -
+                    // there's no push-based recapture on macOS, so once this loop exits, frames stop arriving
+                    // for good until the source is restarted. See MainWindowViewModel.OnFrameArrived, which
+                    // guards its own detector calls but can't guard against subscribers added elsewhere.
+                    Console.WriteLine($"[frame-arrived] subscriber threw, continuing poll loop: {ex.Message}");
+                }
             }
         }
         catch (OperationCanceledException)

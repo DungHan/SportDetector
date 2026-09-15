@@ -1,12 +1,18 @@
+using System;
 using System.ComponentModel;
+using System.Linq;
 using Avalonia.Controls;
+using Avalonia.Controls.Presenters;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using NBA.App.ViewModels;
 
 namespace NBA.App.Views;
 
 public partial class RawOverlayView : UserControl
 {
+    private int _debugDumpsRemaining = 5;
+
     public RawOverlayView()
     {
         InitializeComponent();
@@ -16,8 +22,38 @@ public partial class RawOverlayView : UserControl
             {
                 viewModel.PropertyChanged += OnViewModelPropertyChanged;
                 SyncOverlayCanvasSize(viewModel);
+                viewModel.Visuals.CollectionChanged += (_, _) => DumpVisualTreeOnce();
             }
         };
+    }
+
+    // TEMPORARY diagnostic (remove once live rendering is confirmed): dumps the actual live ContentPresenter
+    // Canvas.Left/Top + Bounds for the first few frames with visuals, so a "nothing renders live despite
+    // passing headless tests" report can be told apart from "positioned off-canvas" vs "never gets a
+    // ContentPresenter at all" vs "positioned correctly but not visible".
+    private void DumpVisualTreeOnce()
+    {
+        if (_debugDumpsRemaining <= 0)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_debugDumpsRemaining <= 0)
+            {
+                return;
+            }
+
+            _debugDumpsRemaining--;
+
+            var presenters = OverlayCanvas.GetVisualDescendants().OfType<ContentPresenter>().ToList();
+            Console.WriteLine($"[overlay-debug] canvas bounds={OverlayCanvas.Bounds} size={OverlayCanvas.Width}x{OverlayCanvas.Height} presenters={presenters.Count}");
+            foreach (var presenter in presenters)
+            {
+                Console.WriteLine($"[overlay-debug] presenter Left={Canvas.GetLeft(presenter)} Top={Canvas.GetTop(presenter)} Bounds={presenter.Bounds} IsVisible={presenter.IsVisible} Content={presenter.Content}");
+            }
+        });
     }
 
     // Driven from code rather than a compiled binding path (CurrentFrame.PixelSize.Width/Height): the overlay

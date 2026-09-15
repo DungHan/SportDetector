@@ -49,4 +49,21 @@ public class RawOverlayViewSmokeTests
         ellipses = view.GetVisualDescendants().OfType<Ellipse>().ToList();
         Assert.Single(ellipses);
     }
+
+    [AvaloniaFact]
+    public void View_RendersBoxAnnotationAsRectangle_NotEllipse()
+    {
+        var viewModel = new RawOverlayViewModel();
+        var view = new RawOverlayView { DataContext = viewModel };
+        var window = new Window { Content = view };
+        window.Show();
+
+        viewModel.SetAnnotations([OverlayAnnotation.ForBox(1, 2, 3, 4, "88%")]);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var rectangles = view.GetVisualDescendants().OfType<Rectangle>().Where(r => r.IsVisible).ToList();
+        var ellipses = view.GetVisualDescendants().OfType<Ellipse>().Where(e => e.IsVisible).ToList();
+        Assert.Single(rectangles);
+        Assert.Empty(ellipses);
+    }
 }
