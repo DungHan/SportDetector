@@ -31,12 +31,14 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly ISourceProfileStore _profileStore;
     private readonly IJerseyNumberRecognizer _jerseyNumberRecognizer;
     private readonly IJerseyNumberVoteAggregator _jerseyNumberVoteAggregator;
+    private readonly PlaybackRegionCoordinator _playbackRegionCoordinator;
     private readonly GameStateTracker _gameStateTracker = new();
 
     private static readonly TimeSpan KeypointDetectionInterval = TimeSpan.FromMilliseconds(150);
 
     private string? _currentSourceKey;
     private bool _classifiedForCurrentSource;
+    private NormalizedRect? _currentPlaybackRegion;
     private DateTimeOffset _lastScoreboardCheckAt;
     private DateTimeOffset _lastKeypointCheckAt;
     private IReadOnlyList<DetectedKeypoint> _lastKeypoints = [];
@@ -56,6 +58,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         ISourceProfileStore profileStore,
         IJerseyNumberRecognizer jerseyNumberRecognizer,
         IJerseyNumberVoteAggregator jerseyNumberVoteAggregator,
+        PlaybackRegionCoordinator playbackRegionCoordinator,
         int detectionIntervalFrames = 3)
     {
         _frameSource = frameSource;
@@ -68,6 +71,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _profileStore = profileStore;
         _jerseyNumberRecognizer = jerseyNumberRecognizer;
         _jerseyNumberVoteAggregator = jerseyNumberVoteAggregator;
+        _playbackRegionCoordinator = playbackRegionCoordinator;
         _detectionIntervalFrames = detectionIntervalFrames;
 
         SourcePicker = new SourcePickerViewModel(sourceEnumerator);
@@ -121,6 +125,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
 
         _currentSourceKey = SourceIdentity.DeriveKey(source);
         _classifiedForCurrentSource = false;
+
+        // Reuse a region detected for this exact source in an earlier session (mirrors calibration/scoreboard
+        // reuse below); null just means "not detected yet" - accumulation resumes on this source's own frames.
+        _currentPlaybackRegion = _playbackRegionCoordinator.GetPersistedRegion(_currentSourceKey);
         ManualCalibration.SourceKey = _currentSourceKey;
 
         // Track IDs are only meaningful within one continuous view of a source - an unrelated source switch
@@ -167,10 +175,36 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         }
     }
 
+    private CroppedFrame? CropToPlaybackRegion(CapturedFrame frame) =>
+        _currentPlaybackRegion is { } region
+            ? FrameCropper.Crop(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride, region.X, region.Y, region.Width, region.Height)
+            : null;
+
+    private static PlayerDetection OffsetToFullFrame(PlayerDetection detection, int left, int top) =>
+        new(detection.Left + left, detection.Top + top, detection.Right + left, detection.Bottom + top, detection.Confidence);
+
+    private static DetectedKeypoint OffsetToFullFrame(DetectedKeypoint keypoint, int left, int top) =>
+        keypoint with { Position = new ImagePoint(keypoint.Position.X + left, keypoint.Position.Y + top) };
+
     private void OnFrameArrived(object? sender, FrameArrivedEventArgs e)
     {
         var frame = e.Frame;
         var bitmap = FrameBitmapConverter.ToWriteableBitmap(frame);
+
+        // Auto-detects the sub-rectangle that's actually gameplay versus surrounding page chrome (YouTube
+        // comments, recommended-video thumbnails, ...) that happens to sit inside the captured frame - once
+        // found (and persisted per source), it stays cached in _currentPlaybackRegion and this stops running.
+        if (_currentPlaybackRegion is null && _currentSourceKey is { } accumulatingSourceKey)
+        {
+            _currentPlaybackRegion = _playbackRegionCoordinator.Accumulate(accumulatingSourceKey, frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+        }
+
+        // Cropping detector input to the playback region (once known) keeps player/keypoint detection from
+        // running inference over that surrounding chrome. Detector output comes back in the crop's own pixel
+        // space, so results are offset back into full-frame coordinates immediately below (see OffsetToFullFrame),
+        // before anything downstream (tracker, overlay, court projection) ever sees them - none of that code
+        // needs to know cropping happened.
+        var playbackCrop = CropToPlaybackRegion(frame);
 
         // Player detection is independent of sport/calibration state (vision/player-detection spec), but only
         // runs every `_detectionIntervalFrames`th captured frame - it's the most expensive step in this pipeline,
@@ -187,7 +221,11 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             IReadOnlyList<PlayerDetection> playerDetections;
             try
             {
-                playerDetections = _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+                playerDetections = playbackCrop is { } crop
+                    ? _playerDetector.Detect(crop.Pixels, crop.Width, crop.Height, crop.Stride)
+                        .Select(d => OffsetToFullFrame(d, crop.Left, crop.Top))
+                        .ToList()
+                    : _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
             }
             catch (Exception ex)
             {
@@ -262,7 +300,15 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             try
             {
                 var region = _profileStore.Load(sourceKey)?.ScoreboardRegion ?? NormalizedRect.DefaultScoreboardRegion;
-                var crop = FrameCropper.Crop(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride, region.X, region.Y, region.Width, region.Height);
+
+                // The scoreboard is part of the broadcast itself, so once the playback region is known, position
+                // it relative to that region instead of the full captured frame - region (e.g. the default's
+                // bottom-15%-of-full-width) assumes the game fills the frame, which is wrong once surrounding
+                // page chrome (YouTube UI, ...) is also inside it. playbackCrop is the same crop already computed
+                // above for player/keypoint detection.
+                var crop = playbackCrop is { } gameCrop
+                    ? FrameCropper.Crop(gameCrop.Pixels, gameCrop.Width, gameCrop.Height, gameCrop.Stride, region.X, region.Y, region.Width, region.Height)
+                    : FrameCropper.Crop(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride, region.X, region.Y, region.Width, region.Height);
                 var lines = _scoreboardOcr.Recognize(crop.Pixels, crop.Width, crop.Height, crop.Stride);
                 var reading = ScoreboardTextParser.Parse(lines, frame.Timestamp);
                 _gameStateTracker.Update(reading);
@@ -310,7 +356,11 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             _lastKeypointCheckAt = frame.Timestamp;
             try
             {
-                _lastKeypoints = _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+                _lastKeypoints = playbackCrop is { } crop
+                    ? _keypointDetector.Detect(crop.Pixels, crop.Width, crop.Height, crop.Stride)
+                        .Select(k => OffsetToFullFrame(k, crop.Left, crop.Top))
+                        .ToList()
+                    : _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
             }
             catch (Exception ex)
             {

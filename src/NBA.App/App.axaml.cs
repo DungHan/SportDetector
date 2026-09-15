@@ -123,6 +123,7 @@ public partial class App : Application
                 profileStore,
                 jerseyNumberRecognizer,
                 jerseyNumberVoteAggregator,
+                new PlaybackRegionCoordinator(profileStore),
                 // Confirmed (by testing detectionIntervalFrames: 1) that PredictOnly()'s pure motion
                 // extrapolation between detections was the main source of "flying" boxes - every-frame
                 // detection fixed it but was too expensive (visible lag). Settling on every-2nd-frame as a

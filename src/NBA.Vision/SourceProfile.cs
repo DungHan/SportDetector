@@ -19,6 +19,15 @@ public sealed class SourceProfile
     /// <summary>
     /// Manual override for where the scoreboard is on screen for this source. Null means "use
     /// <see cref="NormalizedRect.DefaultScoreboardRegion"/>" - most sources never need to set this explicitly.
+    /// Normalized against <see cref="PlaybackRegion"/> once that's known (the scoreboard is part of the
+    /// broadcast, not the surrounding page), or against the full captured frame before then.
     /// </summary>
     public NormalizedRect? ScoreboardRegion { get; set; }
+
+    /// <summary>
+    /// Auto-detected sub-rectangle that actually shows gameplay, as opposed to surrounding chrome (YouTube page,
+    /// browser UI, ...) that happens to be inside the captured frame - see <see cref="PlaybackRegionDetector"/>
+    /// and <see cref="PlaybackRegionCoordinator"/>. Null until enough frames have been observed to detect it.
+    /// </summary>
+    public NormalizedRect? PlaybackRegion { get; set; }
 }

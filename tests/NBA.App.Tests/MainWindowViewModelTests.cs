@@ -43,9 +43,15 @@ public class MainWindowViewModelTests : IDisposable
 
         public int CallCount { get; private set; }
 
+        public int LastWidth { get; private set; }
+
+        public int LastHeight { get; private set; }
+
         public IReadOnlyList<PlayerDetection> Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride)
         {
             CallCount++;
+            LastWidth = width;
+            LastHeight = height;
             return Detections;
         }
     }
@@ -60,9 +66,12 @@ public class MainWindowViewModelTests : IDisposable
 
         public int ResetCallCount { get; private set; }
 
+        public IReadOnlyList<PlayerDetection> LastDetections { get; private set; } = [];
+
         public IReadOnlyList<TrackedPlayer> Update(IReadOnlyList<PlayerDetection> detections)
         {
             UpdateCallCount++;
+            LastDetections = detections;
             return Tracks;
         }
 
@@ -103,6 +112,20 @@ public class MainWindowViewModelTests : IDisposable
         }
     }
 
+    private sealed class StubScoreboardOcrEngine : IScoreboardOcrEngine
+    {
+        public int LastWidth { get; private set; }
+
+        public int LastHeight { get; private set; }
+
+        public IReadOnlyList<ScoreboardOcrLine> Recognize(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride)
+        {
+            LastWidth = width;
+            LastHeight = height;
+            return [];
+        }
+    }
+
     private static CapturedFrame MakeFrame() => new()
     {
         Width = 4,
@@ -139,7 +162,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
 
         // Give the fire-and-forget SelectSourceAsync a chance to complete.
         await Task.Delay(50);
@@ -163,7 +187,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -190,7 +215,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -226,7 +252,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -269,7 +296,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new StubJerseyNumberVoteAggregator()); // Resolved defaults to empty - no track has a resolved number
+            new StubJerseyNumberVoteAggregator(), // Resolved defaults to empty - no track has a resolved number
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -304,7 +332,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            jerseyNumberVoteAggregator);
+            jerseyNumberVoteAggregator,
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -339,7 +368,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -372,7 +402,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -400,6 +431,7 @@ public class MainWindowViewModelTests : IDisposable
             store,
             new NullJerseyNumberRecognizer(),
             new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
             detectionIntervalFrames: 1);
         await Task.Delay(50);
 
@@ -428,6 +460,7 @@ public class MainWindowViewModelTests : IDisposable
             store,
             new NullJerseyNumberRecognizer(),
             new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
             detectionIntervalFrames: 1);
         await Task.Delay(50);
 
@@ -437,6 +470,101 @@ public class MainWindowViewModelTests : IDisposable
         frameSource.PublishFrame(MakeFrame());
         Assert.Equal(2, playerTracker.UpdateCallCount);
         Assert.Equal(0, playerTracker.PredictOnlyCallCount);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_WithPersistedPlaybackRegion_CropsDetectorInputAndOffsetsDetectionsBackToFullFrame()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        store.Save(new SourceProfile
+        {
+            SourceKey = SourceIdentity.DeriveKey(SourceA),
+            PlaybackRegion = new NormalizedRect(0.25, 0.25, 0.5, 0.5),
+        });
+
+        // Reported as if found within the crop's own pixel space - the assertions below check it comes back
+        // offset into full-frame space, not left as-is (PlaybackRegionCoordinator/FrameCropper wiring in
+        // MainWindowViewModel.OnFrameArrived).
+        var playerDetector = new StubPlayerDetector { Detections = [new PlayerDetection(1, 1, 2, 2, 0.9f)] };
+        var playerTracker = new StubPlayerTracker();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            playerDetector,
+            playerTracker,
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
+            detectionIntervalFrames: 1);
+        await Task.Delay(50);
+
+        // Region (0.25, 0.25, 0.5, 0.5) of an 8x8 frame is pixels [2, 6) x [2, 6): a 4x4 crop at offset (2, 2).
+        frameSource.PublishFrame(new CapturedFrame
+        {
+            Width = 8,
+            Height = 8,
+            Format = FramePixelFormat.Bgra8,
+            Stride = 32,
+            Pixels = new byte[32 * 8],
+            Timestamp = DateTimeOffset.UtcNow,
+        });
+
+        Assert.Equal(4, playerDetector.LastWidth);
+        Assert.Equal(4, playerDetector.LastHeight);
+
+        var detection = Assert.Single(playerTracker.LastDetections);
+        Assert.Equal(new PlayerDetection(3, 3, 4, 4, 0.9f), detection);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_WithPersistedPlaybackRegion_PositionsScoreboardOcrRelativeToThatRegion()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        store.Save(new SourceProfile
+        {
+            SourceKey = SourceIdentity.DeriveKey(SourceA),
+            PlaybackRegion = new NormalizedRect(0.25, 0.25, 0.5, 0.5),
+        });
+
+        var scoreboardOcr = new StubScoreboardOcrEngine();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            new NullPlayerDetector(),
+            new ByteTrackPlayerTracker(),
+            scoreboardOcr,
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
+        await Task.Delay(50);
+
+        // Playback region (0.25, 0.25, 0.5, 0.5) of an 8x8 frame is a 4x4 crop. DefaultScoreboardRegion (bottom
+        // 15%, full width) of that 4x4 crop is a 4x1 slice - not the 8x2 slice it would be against the full
+        // frame, which is what proves the scoreboard region is positioned relative to the playback region
+        // rather than the full frame.
+        frameSource.PublishFrame(new CapturedFrame
+        {
+            Width = 8,
+            Height = 8,
+            Format = FramePixelFormat.Bgra8,
+            Stride = 32,
+            Pixels = new byte[32 * 8],
+            Timestamp = DateTimeOffset.UtcNow,
+        });
+
+        Assert.Equal(4, scoreboardOcr.LastWidth);
+        Assert.Equal(1, scoreboardOcr.LastHeight);
     }
 
     [AvaloniaFact]
@@ -458,6 +586,7 @@ public class MainWindowViewModelTests : IDisposable
             store,
             new NullJerseyNumberRecognizer(),
             new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
             detectionIntervalFrames: 3);
         await Task.Delay(50);
 
@@ -489,7 +618,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             jerseyNumberRecognizer,
-            jerseyNumberVoteAggregator);
+            jerseyNumberVoteAggregator,
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -519,7 +649,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -548,7 +679,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         frameSource.PublishFrame(MakeFrame());
@@ -579,7 +711,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
         Assert.Equal(1, playerTracker.ResetCallCount); // initial source selection also switches "into" source A
@@ -608,6 +741,7 @@ public class MainWindowViewModelTests : IDisposable
             store,
             new NullJerseyNumberRecognizer(),
             new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
             detectionIntervalFrames: 3);
         await Task.Delay(50);
 
@@ -645,7 +779,8 @@ public class MainWindowViewModelTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
         frameSource.PublishFrame(MakeFrame());
         Avalonia.Threading.Dispatcher.UIThread.RunJobs();

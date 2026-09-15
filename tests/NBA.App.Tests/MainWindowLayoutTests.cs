@@ -32,7 +32,8 @@ public class MainWindowLayoutTests : IDisposable
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
-            new PluralityJerseyNumberVoteAggregator());
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
     }
 
     [AvaloniaFact]
