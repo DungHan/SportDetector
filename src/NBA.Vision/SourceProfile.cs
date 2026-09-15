@@ -21,4 +21,11 @@ public sealed class SourceProfile
     /// <see cref="NormalizedRect.DefaultScoreboardRegion"/>" - most sources never need to set this explicitly.
     /// </summary>
     public NormalizedRect? ScoreboardRegion { get; set; }
+
+    /// <summary>
+    /// Auto-detected sub-rectangle that actually shows gameplay, as opposed to surrounding chrome (YouTube page,
+    /// browser UI, ...) that happens to be inside the captured frame - see <see cref="PlaybackRegionDetector"/>
+    /// and <see cref="PlaybackRegionCoordinator"/>. Null until enough frames have been observed to detect it.
+    /// </summary>
+    public NormalizedRect? PlaybackRegion { get; set; }
 }

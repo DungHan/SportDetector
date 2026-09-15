@@ -85,7 +85,8 @@ public partial class App : Application
                 playerDetector,
                 playerTracker,
                 ScoreboardOcrPlatform.CreateEngine(),
-                profileStore);
+                profileStore,
+                new PlaybackRegionCoordinator(profileStore));
 
             desktop.MainWindow = new MainWindow
             {

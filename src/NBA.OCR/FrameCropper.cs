@@ -1,7 +1,12 @@
 namespace NBA.OCR;
 
-/// <summary>A cropped BGRA8 buffer, tightly packed (no row padding) regardless of the source frame's stride.</summary>
-public readonly record struct CroppedFrame(byte[] Pixels, int Width, int Height, int Stride);
+/// <summary>
+/// A cropped BGRA8 buffer, tightly packed (no row padding) regardless of the source frame's stride.
+/// <see cref="Left"/>/<see cref="Top"/> are the pixel offset of this crop within the source frame it came from -
+/// callers that run detection against the crop and need to report positions back in the source frame's own
+/// coordinate space (rather than the crop's) add these back onto the detector's output.
+/// </summary>
+public readonly record struct CroppedFrame(byte[] Pixels, int Width, int Height, int Stride, int Left, int Top);
 
 /// <summary>
 /// Crops a BGRA8 frame buffer to a normalized (0..1, frame-relative) sub-rectangle - used to isolate the
@@ -31,6 +36,6 @@ public static class FrameCropper
             sourceRow.CopyTo(pixels.AsSpan(row * cropStride, cropStride));
         }
 
-        return new CroppedFrame(pixels, cropWidth, cropHeight, cropStride);
+        return new CroppedFrame(pixels, cropWidth, cropHeight, cropStride, left, top);
     }
 }

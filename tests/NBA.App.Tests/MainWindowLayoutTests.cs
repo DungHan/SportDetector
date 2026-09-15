@@ -29,7 +29,8 @@ public class MainWindowLayoutTests : IDisposable
             new NullPlayerDetector(),
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
-            store);
+            store,
+            new PlaybackRegionCoordinator(store));
     }
 
     [AvaloniaFact]
