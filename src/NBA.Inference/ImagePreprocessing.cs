@@ -21,11 +21,36 @@ public static class ImagePreprocessing
         int sourceHeight,
         int sourceStride,
         int targetWidth,
+        int targetHeight) =>
+        ToNchwTensor(bgra8Pixels, sourceWidth, sourceHeight, sourceStride, 0, 0, sourceWidth, sourceHeight, targetWidth, targetHeight);
+
+    /// <summary>
+    /// Same nearest-neighbor mapping as the full-frame overload above, except target pixels are mapped into
+    /// the source-space sub-rectangle <paramref name="cropX"/>/<paramref name="cropY"/>/<paramref name="cropWidth"/>/<paramref name="cropHeight"/>
+    /// instead of the full frame - e.g. a tracked player's box, for per-track model inputs. The crop rectangle
+    /// is assumed already clamped to <c>[0, sourceWidth) x [0, sourceHeight)</c> by the caller (a track's
+    /// motion-predicted box can extend outside the frame during brief occlusion).
+    /// </summary>
+    public static DenseTensor<float> ToNchwTensor(
+        ReadOnlySpan<byte> bgra8Pixels,
+        int sourceWidth,
+        int sourceHeight,
+        int sourceStride,
+        int cropX,
+        int cropY,
+        int cropWidth,
+        int cropHeight,
+        int targetWidth,
         int targetHeight)
     {
         if (sourceWidth <= 0 || sourceHeight <= 0)
         {
             throw new ArgumentException("Source width/height must be positive.");
+        }
+
+        if (cropWidth <= 0 || cropHeight <= 0)
+        {
+            throw new ArgumentException("Crop width/height must be positive.");
         }
 
         if (targetWidth <= 0 || targetHeight <= 0)
@@ -37,10 +62,10 @@ public static class ImagePreprocessing
 
         for (var y = 0; y < targetHeight; y++)
         {
-            var sourceY = Math.Min(sourceHeight - 1, y * sourceHeight / targetHeight);
+            var sourceY = cropY + Math.Min(cropHeight - 1, y * cropHeight / targetHeight);
             for (var x = 0; x < targetWidth; x++)
             {
-                var sourceX = Math.Min(sourceWidth - 1, x * sourceWidth / targetWidth);
+                var sourceX = cropX + Math.Min(cropWidth - 1, x * cropWidth / targetWidth);
                 var pixelOffset = (sourceY * sourceStride) + (sourceX * 4);
 
                 var b = bgra8Pixels[pixelOffset] / 255f;

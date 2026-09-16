@@ -1,10 +1,8 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:NBA.App.ViewModels"
-             xmlns:models="using:NBA.App.Models"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-             xmlns:conv="using:Avalonia.Data.Converters"
              mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
              x:Class="NBA.App.Views.RawOverlayView"
              x:DataType="vm:RawOverlayViewModel"
@@ -19,66 +17,17 @@
             (computed in the captured frame's native pixel space) land outside the visible, scaled-down
             picture. Sizing this inner Canvas to the frame's actual pixel dimensions and letting the Viewbox
             apply the same Stretch="Uniform" fit makes both layers share one coordinate space.
+
+            Annotations are rendered by hand in RawOverlayView.axaml.cs, not via an ItemsControl bound to
+            Visuals: an ItemsControl whose Canvas ItemsPanel positions each generated ContentPresenter through
+            a Style-bound Canvas.Left/Top produced presenters with entirely correct Bounds/IsVisible/Opacity
+            at every level (verified by dumping the live visual tree) that nevertheless never painted a single
+            pixel on screen, while plain, direct Canvas children painted fine - an Avalonia 12.1.2 rendering
+            bug specific to that ItemsControl+ContentPresenter+Style combination, not a layout or visibility
+            bug. Manually adding/positioning shapes as direct Canvas children sidesteps it.
         -->
         <Viewbox Stretch="Uniform">
-            <Canvas x:Name="OverlayCanvas">
-                <ItemsControl ItemsSource="{Binding Visuals}">
-                    <!--
-                        Explicit Canvas ItemsPanel is required: ItemsControl's default panel (a virtualizing
-                        stack panel) measures/arranges each generated item container by layout size, and our
-                        per-item template root below has no intrinsic size of its own (all its content is
-                        positioned via Canvas.Left/Top, which doesn't contribute to measurement) - so every
-                        item collapsed to a 0x0 slot and got clipped away entirely, regardless of what shapes
-                        or IsVisible logic were inside. A real Canvas here means Canvas.Left/Top on the
-                        template root (below) positions it directly, with no ancestor collapsing/clipping it.
-                    -->
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                            <Canvas />
-                        </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <!--
-                        ItemsControl wraps each generated item in a ContentPresenter, and that presenter -
-                        not the DataTemplate's root element - is what the Canvas ItemsPanel actually arranges.
-                        Canvas.Left/Top set on the template root were therefore never read by the panel; they
-                        must be set on the ContentPresenter itself via a style.
-                    -->
-                    <ItemsControl.Styles>
-                        <Style Selector="ContentPresenter" x:DataType="models:AnnotationVisual">
-                            <Setter Property="Canvas.Left" Value="{Binding X}" />
-                            <Setter Property="Canvas.Top" Value="{Binding Y}" />
-                        </Style>
-                    </ItemsControl.Styles>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Canvas>
-                                <!-- Court keypoints (StyleKey="keypoint") get a bold X so they read clearly against
-                                     the video; everything else (player boxes) keeps the plain dot marker. -->
-                                <Path Data="M -8,-8 L 8,8 M 8,-8 L -8,8"
-                                      Stroke="#FF0000" StrokeThickness="4" StrokeLineCap="Round"
-                                      Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
-                                      IsVisible="{Binding StyleKey, Converter={x:Static conv:ObjectConverters.Equal}, ConverterParameter=keypoint}" />
-                                <!-- Plain point marker: excludes keypoints (which already get the X marker above)
-                                     to avoid double-rendering, and excludes boxes (which get the Rectangle below). -->
-                                <Ellipse Width="10" Height="10" Fill="#FF4040"
-                                         RenderTransform="translate(-5px,-5px)">
-                                    <Ellipse.IsVisible>
-                                        <MultiBinding Converter="{x:Static conv:BoolConverters.And}">
-                                            <Binding Path="Width" Converter="{x:Static conv:ObjectConverters.IsNull}" />
-                                            <Binding Path="StyleKey" Converter="{x:Static conv:ObjectConverters.NotEqual}" ConverterParameter="keypoint" />
-                                        </MultiBinding>
-                                    </Ellipse.IsVisible>
-                                </Ellipse>
-                                <Rectangle Width="{Binding Width}" Height="{Binding Height}"
-                                           Stroke="#FF4040" StrokeThickness="2"
-                                           IsVisible="{Binding Width, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
-                                <TextBlock Text="{Binding Label}" Foreground="White" FontSize="11"
-                                           RenderTransform="translate(6px,-16px)" />
-                            </Canvas>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </Canvas>
+            <Canvas x:Name="OverlayCanvas" />
         </Viewbox>
     </Grid>
 

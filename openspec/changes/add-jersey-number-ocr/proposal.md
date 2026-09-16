@@ -1,35 +1,28 @@
 ## Why
 
-`add-bytetrack-tracking` gives every player a stable `TrackId` but explicitly deferred "jersey-number OCR or any multi-frame voting on visual content read from a track's crop" as a separate, independent model and a separate change. Right now a `TrackedPlayer` is just a box + confidence + ID - nothing in the pipeline can answer "which player is this" beyond an arbitrary integer. This change adds that missing identity signal: recognizing the jersey number printed on each tracked player's body and attaching it to that player's track, so downstream consumers (stats, minimap labels, future team assignment) have a human-meaningful label instead of a bare track ID.
+Every tracked player's minimap marker is currently labeled with its track ID (`$"#{t.TrackId}"`, `MainWindowViewModel.ProcessFrameArrived`) — a number the tracker assigns arbitrarily and never reuses, not the player's actual printed jersey number. It resets to a new value any time a track is occluded past `maxLostFrames` and restarts, so it can't identify *who* a marker represents across a broadcast, let alone against a roster. `add-bytetrack-tracking`'s design already flagged jersey-number OCR with multi-frame voting as the intended next consumer of track IDs, and the now-archived `add-player-minimap-projection` reserved the `CourtMarker`/`StyleKey`/`Label` plumbing specifically so this and `add-jersey-color-detection` would have a marker to attach to. This change reads the printed number off each track's own crop and, once enough frames agree, shows that instead.
 
 ## What Changes
 
-- Add a new `NBA.Vision` capability that, on real detection frames (see `throttle-player-detection-cadence`), crops each `TrackedPlayer`'s upper-body region and runs a PP-OCRv4 Detection -> Angle-Classification -> Recognition pipeline over ONNX Runtime (`Microsoft.ML.OnnxRuntime`, already used by `OnnxPlayerDetector`/`OnnxCourtKeypointDetector`) to read the printed number.
-  - Det locates the number's region as a rotated quadrilateral within the upper-body crop (position/angle vary with player pose - no separate player-pose/keypoint model is added; Det's own quadrilateral output stands in for that).
-  - Cls corrects the quadrilateral's orientation (0°/180° flip) before recognition.
-  - Rec reads the (perspective-warped) region constrained to a digits-only whitelist (jersey numbers are 1-2 digits, no letters).
-- A reading is accepted only if Rec's confidence is above a configurable threshold (default range 0.85-0.90) **and** the decoded string matches the 1-2 digit format - anything else is discarded, not recorded.
-- Add a per-`TrackId` jersey-number cache with a voting rule: a track's number becomes "locked" only after a configurable number (default 2-3) of accepted readings agree; once locked, the cached number is returned for that track for the rest of its lifetime, and is never overwritten or cleared by later low-confidence, disagreeing, or missing readings.
-- `TrackedPlayer` (or a companion per-track lookup keyed by `TrackId`) exposes the current jersey-number state (locked number, or "not yet determined") for consumers such as overlay rendering.
-- Recognition only runs on frames where `IPlayerDetector.Detect(...)` actually ran (real detection frames per the existing cadence gate) - `PredictOnly()` frames reuse whatever jersey-number state a track already has, since there's no new crop worth re-running expensive OCR on for a motion-predicted box.
-- Explicitly out of scope: migrating the existing scoreboard OCR (`NBA.OCR`, native Mac Vision / Windows OCR) onto this new ONNX pipeline - it continues to work as-is, unchanged, on its own native engines. No shared "one Rec engine for both scoreboard and jersey" architecture in this change.
-- Explicitly out of scope: a dedicated player-pose/keypoint model for affine correction - Det's rotated-quadrilateral output is relied on instead.
-- Explicitly out of scope: team assignment, jersey color, or any use of the recognized number beyond attaching it to a track.
+- New `NBA.JerseyOcr` capability: `IJerseyNumberRecognizer`, reading one track's cropped image region and returning a recognized number + confidence, or "unrecognized." Backed by `OnnxJerseyNumberRecognizer` (no trained model shipped in this change — same posture as `vision/court-calibration`'s keypoint model), with a `NullJerseyNumberRecognizer` degraded path that always returns "unrecognized," matching the existing `NullPlayerDetector`/`NullCourtKeypointDetector` pattern. (Originally planned to reuse the pre-scaffolded `NBA.OCR` project, but a concurrently-merged scoreboard-OCR change claimed that project for unrelated broadcast-text recognition first — this capability lives in its own `NBA.JerseyOcr` project instead.)
+- Per-track multi-frame voting: accumulate each frame's recognized number per `TrackId`, resolve to a stable number only once one candidate has enough accumulated votes (avoids flipping the displayed number on a single bad frame). Vote history for a track is discarded when its track terminates (mirrors `IPlayerTracker.Reset()`/track-termination semantics already established by `tracking/player-tracking`) — a track ID is never assumed to carry a number forward across a termination/restart.
+- `MainWindowViewModel.ProcessFrameArrived` crops each tracked player's box out of the current frame, runs it through the recognizer, feeds the result into the vote aggregator, and uses the resolved jersey number (once one exists) as that track's `CourtMarker.Label` instead of `$"#{t.TrackId}"`; falls back to the track ID label until a number resolves.
+- `MinimapView.axaml`'s marker template renders `CourtMarker.Label` as visible text on/inside the marker circle — today `Label` is carried on `CourtMarker`/`AnnotationVisual` but the minimap's `Ellipse` template never displays it, so this is the first change that actually surfaces it there.
+- Explicitly out of scope: jersey **color** extraction (separate planned change, `add-jersey-color-detection`), team assignment or roster matching, and any form of re-identification (a track that terminates and a new track that later shows the same jersey number are never merged — matches the Re-ID boundary `add-bytetrack-tracking`'s design already drew).
 
 ## Capabilities
 
 ### New Capabilities
-- `vision/jersey-number-recognition`: cropping a tracked player's upper-body region, running a PP-OCRv4 Det/Cls/Rec ONNX pipeline over it with a digits-only whitelist, gating accepted readings by confidence and format, and voting per-`TrackId` to a sticky locked number that survives later missed or low-confidence readings.
+- `ocr/jersey-number-recognition`: recognizing a player's printed jersey number from a tracked crop, with multi-frame voting to produce one stable number per track.
 
 ### Modified Capabilities
-(none - `tracking/player-tracking` and `vision/player-detection` are consumed as-is; this change only adds a new reader of `TrackedPlayer`/detection-frame timing, it does not change their requirements)
+- `app/dual-view-shell`: the minimap's per-tracked-player marker (added by `add-player-minimap-projection`) is now labeled with the resolved jersey number instead of the raw track ID once recognition resolves, and the minimap's marker template renders that label visibly for the first time.
 
 ## Impact
 
-- New files in `src/NBA.Vision/`: `IJerseyNumberRecognizer.cs`, `JerseyNumberReading.cs` (result type: digits + confidence), `OnnxJerseyNumberRecognizer.cs` (Det/Cls/Rec pipeline + whitelist decoding), `NullJerseyNumberRecognizer.cs` (missing-model fallback, matching the existing detector/keypoint pattern).
-- New files in `src/NBA.Tracking/` (or `src/NBA.Vision/`, see design.md): a per-`TrackId` jersey-number cache/voter that tracks accepted readings and exposes the locked state.
-- `src/NBA.App/ViewModels/MainWindowViewModel.cs`: on real detection frames, crop each `TrackedPlayer`'s upper-body region and feed it through the recognizer + voter; render the locked jersey number (when present) alongside the existing track-ID label.
-- `src/NBA.App/App.axaml.cs`: construct `OnnxJerseyNumberRecognizer` (or `NullJerseyNumberRecognizer` if the model file is absent), matching the existing conditional wiring for `OnnxPlayerDetector`/`OnnxCourtKeypointDetector`.
-- New ONNX model asset(s) for PP-OCRv4 Det/Cls/Rec (exported, not the native Paddle Inference runtime) - path/licensing/provenance tracked in design.md.
-- New test project or additions to `tests/NBA.Vision.Tests/` covering whitelist decoding, confidence/format gating, and the per-track voting/lock lifecycle without needing real model files.
-- No changes to `src/NBA.OCR/` (scoreboard OCR untouched).
+- `src/NBA.JerseyOcr/`: new project (registered in `NBA.slnx`) with `IJerseyNumberRecognizer`, `OnnxJerseyNumberRecognizer`, `NullJerseyNumberRecognizer`, and the per-track vote aggregator.
+- `tests/NBA.JerseyOcr.Tests/`: new test project (registered in `NBA.slnx`, mirroring `tests/NBA.Tracking.Tests`'s deterministic, no-model-file style — hand-constructed recognition sequences, no fixture assets needed for the voting logic).
+- `src/NBA.Inference/ImagePreprocessing.cs`: likely needs a crop-region-aware preprocessing path (today's `ToNchwTensor` always maps the full source frame; a track's box is a sub-region of it) — finalized in design.md.
+- `src/NBA.App/ViewModels/MainWindowViewModel.cs`: crop extraction per tracked player, recognizer invocation, vote aggregation wiring, marker label resolution.
+- `src/NBA.App/App.axaml.cs`: wire `IJerseyNumberRecognizer` (model-file-present check + `Null` fallback, matching the existing detector-wiring pattern) and the vote aggregator into `MainWindowViewModel`'s constructor.
+- `src/NBA.App/Views/MinimapView.axaml`: marker `DataTemplate` renders `Label` as text.

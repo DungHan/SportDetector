@@ -6,6 +6,7 @@ using Avalonia.Markup.Xaml;
 using NBA.App.Services;
 using NBA.App.ViewModels;
 using NBA.App.Views;
+using NBA.JerseyOcr;
 using NBA.Tracking;
 using NBA.Vision;
 
@@ -28,6 +29,7 @@ public partial class App : Application
             var sportPromptsPath = Path.Combine(GetModelsDirectory(), "sport-classifier-prompts.clip.json");
             var keypointModelPath = Path.Combine(GetModelsDirectory(), "court-keypoints.basketball.onnx");
             var playerDetectionModelPath = Path.Combine(GetModelsDirectory(), "player-detection.onnx");
+            var jerseyNumberModelPath = Path.Combine(GetModelsDirectory(), "jersey-number.onnx");
 
             // No trained keypoint model is shipped in this change yet (see design.md's risk entries) - fall
             // back to the degraded/manual-only path rather than failing to start. The sport classifier now has
@@ -63,6 +65,15 @@ public partial class App : Application
             IPlayerDetector playerDetector = File.Exists(playerDetectionModelPath)
                 ? new OnnxPlayerDetector(
                     playerDetectionModelPath,
+                    // Lowered from the library defaults (confidenceThreshold: 0.5, iouThreshold: 0.45): real
+                    // gameplay footage was visibly under-detecting crowded/distant players. A lower confidence
+                    // floor keeps more real (if less certain) boxes - ByteTrackPlayerTracker's own two-stage
+                    // matching (see its type-level doc comment) already treats sub-highConfidenceThreshold
+                    // detections as "low confidence" and only lets them continue existing tracks, so this
+                    // doesn't let stray noise spawn new tracks. A higher IoU threshold makes NMS less eager to
+                    // treat two adjacent players (e.g. in a crowded paint) as duplicate boxes for the same one.
+                    confidenceThreshold: 0.35f,
+                    iouThreshold: 0.6f,
                     // TEMPORARY diagnostic (remove once real-world confidence is calibrated): logs the max
                     // raw person-confidence seen across all 8400 candidates each frame, and how many passed
                     // the threshold, so a "nothing renders" report can be told apart from "genuinely below
@@ -74,7 +85,31 @@ public partial class App : Application
             // No missing-model degraded path needed here (unlike the detectors above) - ByteTrackPlayerTracker
             // is a pure algorithm over already-in-memory boxes, not backed by an external model file (see
             // design.md in openspec/changes/add-bytetrack-tracking/), so it's always wired.
-            IPlayerTracker playerTracker = new ByteTrackPlayerTracker();
+            IPlayerTracker playerTracker = new ByteTrackPlayerTracker(
+                // Raised above the round-1 (highConfidenceIouThreshold) default: lowering the detector's
+                // confidenceThreshold above let a lot more low-confidence noise (crowd/bench/referee boxes
+                // misclassified at 0.35-0.6) into round 2's matching pool. At the same 0.3 IoU as round 1,
+                // that noise was loose enough to hijack a track away from its predicted position - and unlike
+                // a track that's genuinely unmatched, a hijacked track's LostFrames resets to 0, so it isn't
+                // caught by ToVisiblePlayers' coasting cutoff. Round 2 exists to recover through real
+                // occlusion/blur, not to accept any loose overlap, so it should require tighter spatial
+                // agreement than round 1's cleaner high-confidence detections do.
+                lowConfidenceIouThreshold: 0.5,
+                // Tuned alongside detectionIntervalFrames below: the default of 5 was sized for a detection
+                // cadence of every 3rd frame, where 5 missed Update() calls already span ~15 raw frames. At
+                // the faster cadence below, that default would let a stale track coast on pure motion
+                // prediction for several consecutive real frames before being hidden - long enough for a bad
+                // velocity estimate to visibly drift. Tightened to bail out after 1 miss.
+                maxVisibleLostFrames: 1);
+
+            // No trained jersey-number recognition model is shipped in this change yet (see design.md's risk
+            // entries) - falls back to the degraded always-unrecognized path. PluralityJerseyNumberVoteAggregator
+            // is a pure algorithm over already-in-memory results, not backed by an external model file, so it's
+            // always wired unconditionally (same posture as ByteTrackPlayerTracker above).
+            IJerseyNumberRecognizer jerseyNumberRecognizer = File.Exists(jerseyNumberModelPath)
+                ? new OnnxJerseyNumberRecognizer(jerseyNumberModelPath)
+                : new NullJerseyNumberRecognizer();
+            IJerseyNumberVoteAggregator jerseyNumberVoteAggregator = new PluralityJerseyNumberVoteAggregator();
 
             var mainViewModel = new MainWindowViewModel(
                 CapturePlatform.CreateFrameSource(),
@@ -86,7 +121,15 @@ public partial class App : Application
                 playerTracker,
                 ScoreboardOcrPlatform.CreateEngine(),
                 profileStore,
-                new PlaybackRegionCoordinator(profileStore));
+                jerseyNumberRecognizer,
+                jerseyNumberVoteAggregator,
+                new PlaybackRegionCoordinator(profileStore),
+                // Confirmed (by testing detectionIntervalFrames: 1) that PredictOnly()'s pure motion
+                // extrapolation between detections was the main source of "flying" boxes - every-frame
+                // detection fixed it but was too expensive (visible lag). Settling on every-2nd-frame as a
+                // middle ground: half the extrapolation-only frames of the old default of 3, at less added
+                // detector cost than running every frame.
+                detectionIntervalFrames: 2);
 
             desktop.MainWindow = new MainWindow
             {

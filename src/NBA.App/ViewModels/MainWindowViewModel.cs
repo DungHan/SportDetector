@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using NBA.App.Models;
 using NBA.App.Services;
 using NBA.Capture;
+using NBA.JerseyOcr;
 using NBA.OCR;
 using NBA.State;
 using NBA.Tracking;
@@ -28,6 +29,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly IPlayerTracker _playerTracker;
     private readonly IScoreboardOcrEngine _scoreboardOcr;
     private readonly ISourceProfileStore _profileStore;
+    private readonly IJerseyNumberRecognizer _jerseyNumberRecognizer;
+    private readonly IJerseyNumberVoteAggregator _jerseyNumberVoteAggregator;
     private readonly PlaybackRegionCoordinator _playbackRegionCoordinator;
     private readonly GameStateTracker _gameStateTracker = new();
 
@@ -53,6 +56,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         IPlayerTracker playerTracker,
         IScoreboardOcrEngine scoreboardOcr,
         ISourceProfileStore profileStore,
+        IJerseyNumberRecognizer jerseyNumberRecognizer,
+        IJerseyNumberVoteAggregator jerseyNumberVoteAggregator,
         PlaybackRegionCoordinator playbackRegionCoordinator,
         int detectionIntervalFrames = 3)
     {
@@ -64,6 +69,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _playerTracker = playerTracker;
         _scoreboardOcr = scoreboardOcr;
         _profileStore = profileStore;
+        _jerseyNumberRecognizer = jerseyNumberRecognizer;
+        _jerseyNumberVoteAggregator = jerseyNumberVoteAggregator;
         _playbackRegionCoordinator = playbackRegionCoordinator;
         _detectionIntervalFrames = detectionIntervalFrames;
 
@@ -243,6 +250,29 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             .Select(t => OverlayAnnotation.ForBox(t.Left, t.Top, t.Right, t.Bottom, $"#{t.TrackId}"))
             .ToList();
 
+        // Recognition + voting run unconditionally alongside tracking, before the sport/calibration gates
+        // below (design.md's "lets vote counts warm up from the moment a track exists"), so a resolved number
+        // is already available the moment calibration completes. A plain loop (not LINQ) because
+        // frame.Pixels.Span is a ref struct and can't be captured into a lambda's closure.
+        var jerseyNumberResults = new List<(int TrackId, JerseyNumberRecognitionResult Result)>(trackedPlayers.Count);
+        foreach (var t in trackedPlayers)
+        {
+            JerseyNumberRecognitionResult jerseyResult;
+            try
+            {
+                jerseyResult = _jerseyNumberRecognizer.Recognize(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride, t.Left, t.Top, t.Right, t.Bottom);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[jersey-ocr] recognition failed for track {t.TrackId}, treating as unrecognized: {ex.Message}");
+                jerseyResult = new JerseyNumberRecognitionResult(Number: null, Confidence: 0f);
+            }
+
+            jerseyNumberResults.Add((t.TrackId, jerseyResult));
+        }
+
+        var resolvedJerseyNumbers = _jerseyNumberVoteAggregator.Update(jerseyNumberResults);
+
         // This handler runs synchronously on MacFrameSource's background polling thread, not the UI thread
         // (macOS capture has no push-based callback - see MacFrameSource.PollLoopAsync). Everything above is
         // a pure computation; everything below mutates state Avalonia's UI renders from. In particular,
@@ -365,7 +395,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             {
                 var footPoint = new ImagePoint((t.Left + t.Right) / 2, t.Bottom);
                 var court = PointProjector.Project(calibration, footPoint);
-                return new CourtMarker(court.X, court.Y, $"#{t.TrackId}", "player");
+                var label = resolvedJerseyNumbers.TryGetValue(t.TrackId, out var number) ? $"#{number}" : $"#{t.TrackId}";
+                return new CourtMarker(court.X, court.Y, label, "player");
             });
 
             markers = keypointMarkers.Concat(playerMarkers).ToList();

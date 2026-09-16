@@ -3,6 +3,7 @@
     <Project Path="src/NBA.App/NBA.App.csproj" />
     <Project Path="src/NBA.Capture/NBA.Capture.csproj" />
     <Project Path="src/NBA.Inference/NBA.Inference.csproj" />
+    <Project Path="src/NBA.JerseyOcr/NBA.JerseyOcr.csproj" />
     <Project Path="src/NBA.OCR/NBA.OCR.csproj" />
     <Project Path="src/NBA.State/NBA.State.csproj" />
     <Project Path="src/NBA.Tracking/NBA.Tracking.csproj" />
@@ -12,6 +13,7 @@
     <Project Path="tests/NBA.App.Tests/NBA.App.Tests.csproj" />
     <Project Path="tests/NBA.Capture.Tests/NBA.Capture.Tests.csproj" />
     <Project Path="tests/NBA.Inference.Tests/NBA.Inference.Tests.csproj" />
+    <Project Path="tests/NBA.JerseyOcr.Tests/NBA.JerseyOcr.Tests.csproj" />
     <Project Path="tests/NBA.OCR.Tests/NBA.OCR.Tests.csproj" />
     <Project Path="tests/NBA.State.Tests/NBA.State.Tests.csproj" />
     <Project Path="tests/NBA.Tracking.Tests/NBA.Tracking.Tests.csproj" />

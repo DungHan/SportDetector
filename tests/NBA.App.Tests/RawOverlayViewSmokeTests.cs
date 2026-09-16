@@ -66,4 +66,24 @@ public class RawOverlayViewSmokeTests
         Assert.Single(rectangles);
         Assert.Empty(ellipses);
     }
+
+    [AvaloniaFact]
+    public void View_RendersCrossedBoxAnnotation_WithoutThrowing()
+    {
+        // A tracked box's corners can momentarily cross (e.g. a motion-prediction glitch), making Width/Height
+        // negative - Avalonia's Layoutable.Width/Height setters throw ArgumentException for negative values,
+        // which crashed the whole app the first time a real (non-hardcoded) detection hit this case.
+        var viewModel = new RawOverlayViewModel();
+        var view = new RawOverlayView { DataContext = viewModel };
+        var window = new Window { Content = view };
+        window.Show();
+
+        viewModel.SetAnnotations([OverlayAnnotation.ForBox(left: 100, top: 100, right: 50, bottom: 40, "crossed")]);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var rectangles = view.GetVisualDescendants().OfType<Rectangle>().Where(r => r.IsVisible).ToList();
+        var rectangle = Assert.Single(rectangles);
+        Assert.Equal(50, rectangle.Width);
+        Assert.Equal(60, rectangle.Height);
+    }
 }

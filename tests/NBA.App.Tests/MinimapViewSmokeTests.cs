@@ -82,6 +82,21 @@ public class MinimapViewSmokeTests
     }
 
     [AvaloniaFact]
+    public void PlayerMarker_LabelTextRendersOnMarker()
+    {
+        var viewModel = new MinimapViewModel { HasValidCalibration = true };
+        viewModel.SetMarkers([new CourtMarker(2, 2, "#7", "player")]);
+        var view = new MinimapView { DataContext = viewModel };
+        var window = new Window { Content = view };
+        window.Show();
+
+        var label = view.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => t.Text == "#7");
+
+        Assert.NotNull(label);
+        Assert.True(label!.IsVisible);
+    }
+
+    [AvaloniaFact]
     public void StatusPanel_ShowsPlaceholder_WhenNoStatusInfoConnected()
     {
         var viewModel = new MinimapViewModel();

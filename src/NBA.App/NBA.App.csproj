@@ -63,6 +63,7 @@
   <ItemGroup>
     <ProjectReference Include="..\NBA.Capture\NBA.Capture.csproj" />
     <ProjectReference Include="..\NBA.Inference\NBA.Inference.csproj" />
+    <ProjectReference Include="..\NBA.JerseyOcr\NBA.JerseyOcr.csproj" />
     <ProjectReference Include="..\NBA.Tracking\NBA.Tracking.csproj" />
     <ProjectReference Include="..\NBA.Vision\NBA.Vision.csproj" />
     <ProjectReference Include="..\NBA.OCR\NBA.OCR.csproj" />

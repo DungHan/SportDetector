@@ -11,14 +11,20 @@ namespace NBA.Tracking;
 /// spawn new tracks. Unmatched tracks are kept alive (at their motion-predicted position) for up to
 /// <paramref name="maxLostFrames"/> consecutive <see cref="Update"/> calls (i.e. detection attempts, not raw
 /// captured frames - see <see cref="PredictOnly"/>) before being terminated; terminated track IDs are never
-/// reused. There is no missing-model degraded path here (unlike <c>IPlayerDetector</c>/<c>ICourtKeypointDetector</c>) -
+/// reused. A track coasting on pure motion prediction for more than <paramref name="maxVisibleLostFrames"/>
+/// consecutive unmatched <see cref="Update"/> calls is withheld from both methods' return value (though it stays
+/// alive internally, and can still be re-matched and become visible again, until <paramref name="maxLostFrames"/>) -
+/// past a couple of misses the constant-velocity extrapolation is more likely to be drifting away from the real
+/// player than tracking them, so it's better to show nothing than a box flying off on stale velocity. There is
+/// no missing-model degraded path here (unlike <c>IPlayerDetector</c>/<c>ICourtKeypointDetector</c>) -
 /// this is a pure algorithm over already-in-memory boxes, so this is the only <see cref="IPlayerTracker"/> implementation.
 /// </summary>
 public sealed class ByteTrackPlayerTracker(
     float highConfidenceThreshold = 0.6f,
     double highConfidenceIouThreshold = 0.3,
     double lowConfidenceIouThreshold = 0.3,
-    int maxLostFrames = 30) : IPlayerTracker
+    int maxLostFrames = 20,
+    int maxVisibleLostFrames = 5) : IPlayerTracker
 {
     private readonly List<Track> _tracks = [];
     private int _nextTrackId = 1;
@@ -90,9 +96,7 @@ public sealed class ByteTrackPlayerTracker(
 
         _tracks.RemoveAll(t => t.LostFrames >= maxLostFrames);
 
-        return _tracks
-            .Select(t => new TrackedPlayer(t.Id, t.LastBox.Left, t.LastBox.Top, t.LastBox.Right, t.LastBox.Bottom, t.LastConfidence))
-            .ToList();
+        return ToVisiblePlayers();
     }
 
     /// <summary>
@@ -105,9 +109,7 @@ public sealed class ByteTrackPlayerTracker(
     {
         AdvancePredictions();
 
-        return _tracks
-            .Select(t => new TrackedPlayer(t.Id, t.LastBox.Left, t.LastBox.Top, t.LastBox.Right, t.LastBox.Bottom, t.LastConfidence))
-            .ToList();
+        return ToVisiblePlayers();
     }
 
     private void AdvancePredictions()
@@ -118,6 +120,12 @@ public sealed class ByteTrackPlayerTracker(
             track.LastBox = track.PredictedBox;
         }
     }
+
+    /// <summary>Every live track, excluding those coasting on pure motion prediction past <paramref name="maxVisibleLostFrames"/> - see the type-level doc comment.</summary>
+    private IReadOnlyList<TrackedPlayer> ToVisiblePlayers() => _tracks
+        .Where(t => t.LostFrames <= maxVisibleLostFrames)
+        .Select(t => new TrackedPlayer(t.Id, t.LastBox.Left, t.LastBox.Top, t.LastBox.Right, t.LastBox.Bottom, t.LastConfidence))
+        .ToList();
 
     public void Reset() => _tracks.Clear();
 

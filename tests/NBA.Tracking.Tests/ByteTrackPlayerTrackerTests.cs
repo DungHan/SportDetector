@@ -73,6 +73,47 @@ public class ByteTrackPlayerTrackerTests
     }
 
     [Fact]
+    public void Update_UnmatchedPastVisibilityLimit_WithheldFromResultButNotTerminated()
+    {
+        const int maxVisibleLostFrames = 2;
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: maxVisibleLostFrames);
+
+        var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        var trackId = Assert.Single(first).TrackId;
+
+        for (var missedFrame = 1; missedFrame <= maxVisibleLostFrames; missedFrame++)
+        {
+            var result = tracker.Update([]);
+            var track = Assert.Single(result);
+            Assert.Equal(trackId, track.TrackId);
+        }
+
+        // One more miss than maxVisibleLostFrames tolerates - the track is still alive (well under
+        // maxLostFrames: 10) but should no longer be reported.
+        var withheld = tracker.Update([]);
+        Assert.Empty(withheld);
+
+        // Re-matching brings it back with the same ID, proving it was withheld rather than terminated.
+        var recovered = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        var recoveredTrack = Assert.Single(recovered);
+        Assert.Equal(trackId, recoveredTrack.TrackId);
+    }
+
+    [Fact]
+    public void PredictOnly_TrackWithheldAfterMissedUpdates_StaysWithheldDuringPrediction()
+    {
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: 1);
+
+        tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        tracker.Update([]); // LostFrames: 1 - still within maxVisibleLostFrames
+        tracker.Update([]); // LostFrames: 2 - now past maxVisibleLostFrames
+
+        var predicted = tracker.PredictOnly();
+
+        Assert.Empty(predicted);
+    }
+
+    [Fact]
     public void Update_UnmatchedHighConfidenceDetection_CreatesNewTrackWithFreshId()
     {
         var tracker = new ByteTrackPlayerTracker();

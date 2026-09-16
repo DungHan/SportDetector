@@ -4,6 +4,7 @@ using NBA.App.Services;
 using NBA.App.ViewModels;
 using NBA.Capture;
 using NBA.Capture.Testing;
+using NBA.JerseyOcr;
 using NBA.OCR;
 using NBA.Tracking;
 using NBA.Vision;
@@ -83,6 +84,34 @@ public class MainWindowViewModelTests : IDisposable
         public void Reset() => ResetCallCount++;
     }
 
+    private sealed class StubJerseyNumberRecognizer : IJerseyNumberRecognizer
+    {
+        public JerseyNumberRecognitionResult Result { get; set; } = new(Number: null, Confidence: 0f);
+
+        public int CallCount { get; private set; }
+
+        public JerseyNumberRecognitionResult Recognize(
+            ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride,
+            double cropLeft, double cropTop, double cropRight, double cropBottom)
+        {
+            CallCount++;
+            return Result;
+        }
+    }
+
+    private sealed class StubJerseyNumberVoteAggregator : IJerseyNumberVoteAggregator
+    {
+        public IReadOnlyDictionary<int, int> Resolved { get; set; } = new Dictionary<int, int>();
+
+        public int UpdateCallCount { get; private set; }
+
+        public IReadOnlyDictionary<int, int> Update(IReadOnlyList<(int TrackId, JerseyNumberRecognitionResult Result)> frameResults)
+        {
+            UpdateCallCount++;
+            return Resolved;
+        }
+    }
+
     private sealed class StubScoreboardOcrEngine : IScoreboardOcrEngine
     {
         public int LastWidth { get; private set; }
@@ -132,6 +161,8 @@ public class MainWindowViewModelTests : IDisposable
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
 
         // Give the fire-and-forget SelectSourceAsync a chance to complete.
@@ -155,6 +186,8 @@ public class MainWindowViewModelTests : IDisposable
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
@@ -181,6 +214,8 @@ public class MainWindowViewModelTests : IDisposable
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
@@ -216,6 +251,8 @@ public class MainWindowViewModelTests : IDisposable
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
@@ -239,6 +276,78 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task FrameArrived_NoResolvedJerseyNumber_MinimapMarkerStillShowsTrackIdLabel()
+    {
+        var store = new FileSourceProfileStore(_directory);
+        var sourceKey = SourceIdentity.DeriveKey(SourceA);
+        new CourtCalibrationCoordinator(store).ManualCalibrate(sourceKey, SportType.Basketball, KnownCorrespondences());
+
+        var frameSource = new FakeFrameSource();
+        var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
+        var playerTracker = new StubPlayerTracker { Tracks = [new TrackedPlayer(1, 0, 0, 2, 2, 0.9f)] };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store),
+            new StubKeypointDetector(keypoints),
+            new StubPlayerDetector(),
+            playerTracker,
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new StubJerseyNumberVoteAggregator(), // Resolved defaults to empty - no track has a resolved number
+            new PlaybackRegionCoordinator(store));
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var playerMarker = Assert.Single(viewModel.Minimap.Markers, m => m.StyleKey == "player");
+        Assert.Equal("#1", playerMarker.Label);
+
+        var trackAnnotation = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Shape == OverlayShapeKind.Box);
+        Assert.Equal("#1", trackAnnotation.Label);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_WithResolvedJerseyNumber_MinimapMarkerShowsResolvedNumber_RawOverlayLabelUnaffected()
+    {
+        var store = new FileSourceProfileStore(_directory);
+        var sourceKey = SourceIdentity.DeriveKey(SourceA);
+        new CourtCalibrationCoordinator(store).ManualCalibrate(sourceKey, SportType.Basketball, KnownCorrespondences());
+
+        var frameSource = new FakeFrameSource();
+        var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
+        var playerTracker = new StubPlayerTracker { Tracks = [new TrackedPlayer(1, 0, 0, 2, 2, 0.9f)] };
+        var jerseyNumberVoteAggregator = new StubJerseyNumberVoteAggregator { Resolved = new Dictionary<int, int> { [1] = 23 } };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store),
+            new StubKeypointDetector(keypoints),
+            new StubPlayerDetector(),
+            playerTracker,
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            jerseyNumberVoteAggregator,
+            new PlaybackRegionCoordinator(store));
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var playerMarker = Assert.Single(viewModel.Minimap.Markers, m => m.StyleKey == "player");
+        Assert.Equal("#23", playerMarker.Label);
+
+        // The raw-overlay box label stays the track ID regardless (design.md's Non-Goals).
+        var trackAnnotation = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Shape == OverlayShapeKind.Box);
+        Assert.Equal("#1", trackAnnotation.Label);
+    }
+
+    [AvaloniaFact]
     public async Task FrameArrived_WhenTrackDisappears_MinimapDropsBackToJustKeypointMarkers()
     {
         var store = new FileSourceProfileStore(_directory);
@@ -258,6 +367,8 @@ public class MainWindowViewModelTests : IDisposable
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
@@ -290,6 +401,8 @@ public class MainWindowViewModelTests : IDisposable
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
@@ -316,6 +429,8 @@ public class MainWindowViewModelTests : IDisposable
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store),
             detectionIntervalFrames: 1);
         await Task.Delay(50);
@@ -343,6 +458,8 @@ public class MainWindowViewModelTests : IDisposable
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store),
             detectionIntervalFrames: 1);
         await Task.Delay(50);
@@ -381,6 +498,8 @@ public class MainWindowViewModelTests : IDisposable
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store),
             detectionIntervalFrames: 1);
         await Task.Delay(50);
@@ -425,6 +544,8 @@ public class MainWindowViewModelTests : IDisposable
             new ByteTrackPlayerTracker(),
             scoreboardOcr,
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
@@ -463,6 +584,8 @@ public class MainWindowViewModelTests : IDisposable
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store),
             detectionIntervalFrames: 3);
         await Task.Delay(50);
@@ -474,6 +597,35 @@ public class MainWindowViewModelTests : IDisposable
         Assert.Equal(1, playerDetector.CallCount);
         Assert.Equal(1, playerTracker.UpdateCallCount);
         Assert.Equal(2, playerTracker.PredictOnlyCallCount);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_CallsJerseyNumberRecognizerOncePerTrackedPlayer_AndAggregatorOncePerFrame()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var playerTracker = new StubPlayerTracker { Tracks = [new TrackedPlayer(1, 0, 0, 2, 2, 0.9f), new TrackedPlayer(2, 2, 2, 4, 4, 0.9f)] };
+        var jerseyNumberRecognizer = new StubJerseyNumberRecognizer();
+        var jerseyNumberVoteAggregator = new StubJerseyNumberVoteAggregator();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            new StubPlayerDetector(),
+            playerTracker,
+            new NullScoreboardOcrEngine(),
+            store,
+            jerseyNumberRecognizer,
+            jerseyNumberVoteAggregator,
+            new PlaybackRegionCoordinator(store));
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+
+        Assert.Equal(2, jerseyNumberRecognizer.CallCount); // one per tracked player
+        Assert.Equal(1, jerseyNumberVoteAggregator.UpdateCallCount);
     }
 
     [AvaloniaFact]
@@ -496,6 +648,8 @@ public class MainWindowViewModelTests : IDisposable
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
@@ -524,6 +678,8 @@ public class MainWindowViewModelTests : IDisposable
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
@@ -554,6 +710,8 @@ public class MainWindowViewModelTests : IDisposable
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
 
@@ -581,6 +739,8 @@ public class MainWindowViewModelTests : IDisposable
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store),
             detectionIntervalFrames: 3);
         await Task.Delay(50);
@@ -618,6 +778,8 @@ public class MainWindowViewModelTests : IDisposable
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
             new PlaybackRegionCoordinator(store));
         await Task.Delay(50);
         frameSource.PublishFrame(MakeFrame());
