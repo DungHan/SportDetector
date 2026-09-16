@@ -62,9 +62,14 @@ public partial class App : Application
 
             // No trained player-detection model is shipped in this change yet (see design.md's risk entries
             // in openspec/changes/add-player-detection/) - falls back to the degraded zero-detections path.
-            IPlayerDetector playerDetector = File.Exists(playerDetectionModelPath)
-                ? new OnnxPlayerDetector(
+            IMultiClassObjectDetector multiClassObjectDetector = File.Exists(playerDetectionModelPath)
+                ? new OnnxMultiClassObjectDetector(
                     playerDetectionModelPath,
+                    // This model's own embedded class-name metadata (models/README.md's "player-detection.onnx"
+                    // section, verified via the file's own onnx.metadata_props `names` key) - the order here
+                    // must match that metadata's index order exactly, since classIndex 4+i's channel is decoded
+                    // positionally, not by name.
+                    classNames: ["Ball", "Hoop", "Period", "Player", "Ref", "Shot Clock", "Team Name", "Team Points", "Time Remaining"],
                     // Matches this specific model's export size (models/README.md's "player-detection.onnx"
                     // section: verified imgsz=[1280,1280] from the file's own embedded metadata) - the library
                     // default of 640 assumes a stock yolov8n-shaped export and would letterbox/resize to the
@@ -89,7 +94,7 @@ public partial class App : Application
                     // threshold" vs "always ~0, likely a wiring bug" without guessing.
                     onDiagnostics: (maxConfidence, aboveThresholdCount) =>
                         Console.WriteLine($"[player-detect] maxConfidence={maxConfidence:P1} aboveThreshold={aboveThresholdCount}"))
-                : new NullPlayerDetector();
+                : new NullMultiClassObjectDetector();
 
             // No missing-model degraded path needed here (unlike the detectors above) - ByteTrackPlayerTracker
             // is a pure algorithm over already-in-memory boxes, not backed by an external model file (see
@@ -126,7 +131,7 @@ public partial class App : Application
                 new SportClassificationCoordinator(sportClassifier, profileStore),
                 new CourtCalibrationCoordinator(profileStore),
                 keypointDetector,
-                playerDetector,
+                multiClassObjectDetector,
                 playerTracker,
                 ScoreboardOcrPlatform.CreateEngine(),
                 profileStore,

@@ -37,9 +37,11 @@ public class MainWindowViewModelTests : IDisposable
         public IReadOnlyList<DetectedKeypoint> Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride) => keypoints;
     }
 
-    private sealed class StubPlayerDetector : IPlayerDetector
+    private sealed class StubMultiClassObjectDetector : IMultiClassObjectDetector
     {
         public IReadOnlyList<PlayerDetection> Detections { get; set; } = [];
+
+        public IReadOnlyList<OnCourtObjectDetection> OtherDetections { get; set; } = [];
 
         public int CallCount { get; private set; }
 
@@ -47,12 +49,12 @@ public class MainWindowViewModelTests : IDisposable
 
         public int LastHeight { get; private set; }
 
-        public IReadOnlyList<PlayerDetection> Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride)
+        public MultiClassDetectionResult Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride)
         {
             CallCount++;
             LastWidth = width;
             LastHeight = height;
-            return Detections;
+            return new MultiClassDetectionResult(Detections, OtherDetections);
         }
     }
 
@@ -157,7 +159,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector(),
+            new NullMultiClassObjectDetector(),
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
@@ -182,7 +184,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector(),
+            new NullMultiClassObjectDetector(),
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
@@ -210,7 +212,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(classifier, store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector(),
+            new NullMultiClassObjectDetector(),
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,
@@ -240,7 +242,7 @@ public class MainWindowViewModelTests : IDisposable
 
         var frameSource = new FakeFrameSource();
         var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
-        var playerDetector = new StubPlayerDetector { Detections = [new PlayerDetection(1, 2, 3, 4, 0.876f)] };
+        var playerDetector = new StubMultiClassObjectDetector { Detections = [new PlayerDetection(1, 2, 3, 4, 0.876f)] };
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
@@ -291,7 +293,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new StubKeypointDetector(keypoints),
-            new StubPlayerDetector(),
+            new StubMultiClassObjectDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
@@ -327,7 +329,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new StubKeypointDetector(keypoints),
-            new StubPlayerDetector(),
+            new StubMultiClassObjectDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
@@ -363,7 +365,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new StubKeypointDetector(keypoints),
-            new StubPlayerDetector(),
+            new StubMultiClassObjectDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
@@ -397,7 +399,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store), // no calibration ever saved for this source
             new StubKeypointDetector([]),
-            new StubPlayerDetector(),
+            new StubMultiClassObjectDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
@@ -418,7 +420,7 @@ public class MainWindowViewModelTests : IDisposable
     {
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
-        var playerDetector = new StubPlayerDetector();
+        var playerDetector = new StubMultiClassObjectDetector();
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
@@ -443,6 +445,40 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task FrameArrived_OnDetectionFrame_CallsMultiClassDetectorExactlyOnce()
+    {
+        // Regression guard for this change's core "one inference pass" goal: players and every other on-court
+        // class must come from a single Detect(...) call, never one call for players plus a separate call for
+        // everything else.
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var detector = new StubMultiClassObjectDetector
+        {
+            Detections = [new PlayerDetection(1, 1, 2, 2, 0.9f)],
+            OtherDetections = [new OnCourtObjectDetection(3, 3, 4, 4, 0.8f, "Ball")],
+        };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            detector,
+            new ByteTrackPlayerTracker(),
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
+            detectionIntervalFrames: 1);
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+
+        Assert.Equal(1, detector.CallCount);
+    }
+
+    [AvaloniaFact]
     public async Task FrameArrived_WithCadenceOfOne_CallsPlayerTrackerUpdateOnEveryFrame()
     {
         var frameSource = new FakeFrameSource();
@@ -454,7 +490,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new StubPlayerDetector(),
+            new StubMultiClassObjectDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
@@ -486,7 +522,7 @@ public class MainWindowViewModelTests : IDisposable
         // Reported as if found within the crop's own pixel space - the assertions below check it comes back
         // offset into full-frame space, not left as-is (PlaybackRegionCoordinator/FrameCropper wiring in
         // MainWindowViewModel.OnFrameArrived).
-        var playerDetector = new StubPlayerDetector { Detections = [new PlayerDetection(1, 1, 2, 2, 0.9f)] };
+        var playerDetector = new StubMultiClassObjectDetector { Detections = [new PlayerDetection(1, 1, 2, 2, 0.9f)] };
         var playerTracker = new StubPlayerTracker();
         await using var viewModel = new MainWindowViewModel(
             frameSource,
@@ -540,7 +576,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector(),
+            new NullMultiClassObjectDetector(),
             new ByteTrackPlayerTracker(),
             scoreboardOcr,
             store,
@@ -572,7 +608,7 @@ public class MainWindowViewModelTests : IDisposable
     {
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
-        var playerDetector = new StubPlayerDetector();
+        var playerDetector = new StubMultiClassObjectDetector();
         var playerTracker = new StubPlayerTracker();
         await using var viewModel = new MainWindowViewModel(
             frameSource,
@@ -613,7 +649,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new StubPlayerDetector(),
+            new StubMultiClassObjectDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
@@ -644,7 +680,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new StubPlayerDetector(),
+            new StubMultiClassObjectDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
@@ -663,6 +699,97 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task FrameArrived_WithNonPlayerDetections_AddsOneOverlayAnnotationPerDetection()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var detector = new StubMultiClassObjectDetector
+        {
+            OtherDetections =
+            [
+                new OnCourtObjectDetection(1, 2, 3, 4, 0.9f, "Ball"),
+                new OnCourtObjectDetection(5, 6, 7, 8, 0.8f, "Hoop"),
+            ],
+        };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            detector,
+            new ByteTrackPlayerTracker(),
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
+            detectionIntervalFrames: 1);
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(2, viewModel.RawOverlay.Annotations.Count);
+
+        var ball = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "Ball");
+        Assert.Equal(OverlayShapeKind.Box, ball.Shape);
+        Assert.Equal("Ball", ball.StyleKey);
+        Assert.Equal([(1.0, 2.0), (3.0, 4.0)], ball.Points);
+
+        var hoop = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "Hoop");
+        Assert.Equal("Hoop", hoop.StyleKey);
+        Assert.Equal([(5.0, 6.0), (7.0, 8.0)], hoop.Points);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_MultipleScoreboardRelatedDetections_UsesUnionBoundingBoxAsOcrCropRegion()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var detector = new StubMultiClassObjectDetector
+        {
+            OtherDetections =
+            [
+                new OnCourtObjectDetection(20, 5, 60, 25, 0.9f, "Period"),
+                new OnCourtObjectDetection(10, 15, 40, 45, 0.9f, "Time Remaining"),
+            ],
+        };
+        var scoreboardOcr = new StubScoreboardOcrEngine();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            detector,
+            new ByteTrackPlayerTracker(),
+            scoreboardOcr,
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
+            detectionIntervalFrames: 1);
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(new CapturedFrame
+        {
+            Width = 100,
+            Height = 50,
+            Format = FramePixelFormat.Bgra8,
+            Stride = 400,
+            Pixels = new byte[400 * 50],
+            Timestamp = DateTimeOffset.UtcNow,
+        });
+
+        // Union of (20,5,60,25) and (10,15,40,45) is (10,5,60,45): a 50x40 crop. Naively taking only the max
+        // right/bottom edges while assuming left/top are 0 would instead produce a 60x45 crop - the differing
+        // width/height here proves both the min and max edges are used.
+        Assert.Equal(50, scoreboardOcr.LastWidth);
+        Assert.Equal(40, scoreboardOcr.LastHeight);
+    }
+
+    [AvaloniaFact]
     public async Task FrameArrived_WithNoTracks_ProducesNoLeftoverBoxAnnotationsFromPriorFrame()
     {
         var frameSource = new FakeFrameSource();
@@ -674,7 +801,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new StubPlayerDetector(),
+            new StubMultiClassObjectDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
@@ -706,7 +833,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new StubPlayerDetector(),
+            new StubMultiClassObjectDetector(),
             playerTracker,
             new NullScoreboardOcrEngine(),
             store,
@@ -728,7 +855,7 @@ public class MainWindowViewModelTests : IDisposable
     {
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
-        var playerDetector = new StubPlayerDetector();
+        var playerDetector = new StubMultiClassObjectDetector();
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA, SourceB]),
@@ -774,7 +901,7 @@ public class MainWindowViewModelTests : IDisposable
             new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new StubKeypointDetector(keypoints),
-            new NullPlayerDetector(),
+            new NullMultiClassObjectDetector(),
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,

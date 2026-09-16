@@ -27,7 +27,7 @@ public class MainWindowLayoutTests : IDisposable
             new SportClassificationCoordinator(new NullSportClassifier(), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
-            new NullPlayerDetector(),
+            new NullMultiClassObjectDetector(),
             new ByteTrackPlayerTracker(),
             new NullScoreboardOcrEngine(),
             store,

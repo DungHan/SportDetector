@@ -25,7 +25,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly SportClassificationCoordinator _sportCoordinator;
     private readonly CourtCalibrationCoordinator _calibrationCoordinator;
     private readonly ICourtKeypointDetector _keypointDetector;
-    private readonly IPlayerDetector _playerDetector;
+    private readonly IMultiClassObjectDetector _multiClassObjectDetector;
     private readonly IPlayerTracker _playerTracker;
     private readonly IScoreboardOcrEngine _scoreboardOcr;
     private readonly ISourceProfileStore _profileStore;
@@ -36,12 +36,22 @@ public sealed class MainWindowViewModel : IAsyncDisposable
 
     private static readonly TimeSpan KeypointDetectionInterval = TimeSpan.FromMilliseconds(150);
 
+    // The `vision/on-court-object-detection` classes whose union bounding box sources the scoreboard OCR crop
+    // region (ocr/scoreboard-recognition spec) - deliberately excludes Ball/Hoop/Player/Ref, which aren't part
+    // of the scoreboard graphic.
+    private static readonly HashSet<string> ScoreboardRelatedClassNames =
+    [
+        "Period", "Shot Clock", "Team Name", "Team Points", "Time Remaining",
+    ];
+
     private string? _currentSourceKey;
     private bool _classifiedForCurrentSource;
     private NormalizedRect? _currentPlaybackRegion;
     private DateTimeOffset _lastScoreboardCheckAt;
     private DateTimeOffset _lastKeypointCheckAt;
     private IReadOnlyList<DetectedKeypoint> _lastKeypoints = [];
+    private IReadOnlyList<OnCourtObjectDetection> _lastOtherDetections = [];
+    private NormalizedRect? _lastScoreboardObjectRegion;
     private readonly RelayCommand _reclassifyCommand;
     private readonly int _detectionIntervalFrames;
     private int _frameCounter;
@@ -52,7 +62,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         SportClassificationCoordinator sportCoordinator,
         CourtCalibrationCoordinator calibrationCoordinator,
         ICourtKeypointDetector keypointDetector,
-        IPlayerDetector playerDetector,
+        IMultiClassObjectDetector multiClassObjectDetector,
         IPlayerTracker playerTracker,
         IScoreboardOcrEngine scoreboardOcr,
         ISourceProfileStore profileStore,
@@ -65,7 +75,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _sportCoordinator = sportCoordinator;
         _calibrationCoordinator = calibrationCoordinator;
         _keypointDetector = keypointDetector;
-        _playerDetector = playerDetector;
+        _multiClassObjectDetector = multiClassObjectDetector;
         _playerTracker = playerTracker;
         _scoreboardOcr = scoreboardOcr;
         _profileStore = profileStore;
@@ -131,6 +141,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _currentPlaybackRegion = _playbackRegionCoordinator.GetPersistedRegion(_currentSourceKey);
         ManualCalibration.SourceKey = _currentSourceKey;
 
+        // No detected scoreboard region carries over from an unrelated source - falls back to the
+        // default/manual region (ocr/scoreboard-recognition spec) until this source's own detections populate it.
+        _lastScoreboardObjectRegion = null;
+
         // Track IDs are only meaningful within one continuous view of a source - an unrelated source switch
         // must not carry stale identities into a scene the tracker never saw (tracking/player-tracking spec).
         _playerTracker.Reset();
@@ -183,8 +197,34 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private static PlayerDetection OffsetToFullFrame(PlayerDetection detection, int left, int top) =>
         new(detection.Left + left, detection.Top + top, detection.Right + left, detection.Bottom + top, detection.Confidence);
 
+    private static OnCourtObjectDetection OffsetToFullFrame(OnCourtObjectDetection detection, int left, int top) =>
+        new(detection.Left + left, detection.Top + top, detection.Right + left, detection.Bottom + top, detection.Confidence, detection.ClassName);
+
+    private static MultiClassDetectionResult OffsetToFullFrame(MultiClassDetectionResult result, int left, int top) =>
+        new(
+            result.Players.Select(d => OffsetToFullFrame(d, left, top)).ToList(),
+            result.Others.Select(d => OffsetToFullFrame(d, left, top)).ToList());
+
     private static DetectedKeypoint OffsetToFullFrame(DetectedKeypoint keypoint, int left, int top) =>
         keypoint with { Position = new ImagePoint(keypoint.Position.X + left, keypoint.Position.Y + top) };
+
+    // Computed over whatever reference-frame-relative pixel space the caller's detections are already in (the
+    // playback crop's own pixel space when cropped, else the full frame) - see ocr/scoreboard-recognition
+    // spec's crop-region requirements and design.md's "Union box is computed over image-pixel coordinates,
+    // then normalized against the same reference frame" decision. Caller guarantees a non-empty list.
+    private static NormalizedRect ComputeNormalizedUnion(IReadOnlyList<OnCourtObjectDetection> detections, int referenceWidth, int referenceHeight)
+    {
+        var left = detections.Min(d => d.Left);
+        var top = detections.Min(d => d.Top);
+        var right = detections.Max(d => d.Right);
+        var bottom = detections.Max(d => d.Bottom);
+
+        return new NormalizedRect(
+            left / referenceWidth,
+            top / referenceHeight,
+            (right - left) / referenceWidth,
+            (bottom - top) / referenceHeight);
+    }
 
     private void OnFrameArrived(object? sender, FrameArrivedEventArgs e)
     {
@@ -218,33 +258,59 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         IReadOnlyList<TrackedPlayer> trackedPlayers;
         if (isDetectionFrame)
         {
-            IReadOnlyList<PlayerDetection> playerDetections;
+            // One shared inference pass produces both players and every other on-court/broadcast-overlay class
+            // (vision/on-court-object-detection spec's "one inference pass" requirement) - never a second
+            // Detect(...) call to get the non-Player classes. The result comes back in the crop's own pixel
+            // space (or full-frame space when no crop is active), the same reference space
+            // NormalizedRect.DefaultScoreboardRegion/SourceProfile.ScoreboardRegion are already normalized
+            // against - so the scoreboard-region computation just below reads it before it's offset to
+            // full-frame coordinates for the tracker/overlay uses further down.
+            MultiClassDetectionResult detectionResult;
             try
             {
-                playerDetections = playbackCrop is { } crop
-                    ? _playerDetector.Detect(crop.Pixels, crop.Width, crop.Height, crop.Stride)
-                        .Select(d => OffsetToFullFrame(d, crop.Left, crop.Top))
-                        .ToList()
-                    : _playerDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+                detectionResult = playbackCrop is { } crop
+                    ? _multiClassObjectDetector.Detect(crop.Pixels, crop.Width, crop.Height, crop.Stride)
+                    : _multiClassObjectDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[player-detect] detection failed for this frame, treating as none: {ex.Message}");
-                playerDetections = [];
+                detectionResult = new MultiClassDetectionResult(Players: [], Others: []);
             }
+
+            // Overwritten only when this frame actually has a scoreboard-related detection - otherwise the
+            // previously cached region (if any) keeps being used (design.md's "no explicit staleness expiry").
+            var scoreboardCandidates = detectionResult.Others.Where(d => ScoreboardRelatedClassNames.Contains(d.ClassName)).ToList();
+            if (scoreboardCandidates.Count > 0)
+            {
+                var referenceWidth = playbackCrop?.Width ?? frame.Width;
+                var referenceHeight = playbackCrop?.Height ?? frame.Height;
+                _lastScoreboardObjectRegion = ComputeNormalizedUnion(scoreboardCandidates, referenceWidth, referenceHeight);
+            }
+
+            var fullFrameResult = playbackCrop is { } offsetCrop
+                ? OffsetToFullFrame(detectionResult, offsetCrop.Left, offsetCrop.Top)
+                : detectionResult;
 
             // Detections are fed through the tracker to attach a stable track ID per player (tracking/player-tracking
             // spec) before rendering, so the same physical player keeps the same box/ID across frames instead of an
             // unlabeled per-frame foot-point.
-            trackedPlayers = _playerTracker.Update(playerDetections);
+            trackedPlayers = _playerTracker.Update(fullFrameResult.Players);
+            _lastOtherDetections = fullFrameResult.Others;
         }
         else
         {
             // No detection was attempted this frame - advance motion prediction only, so tracked boxes keep
             // moving smoothly instead of freezing, without counting this frame against any track's occlusion
-            // buffer (tracking/player-tracking spec's "Advance motion prediction without detection").
+            // buffer (tracking/player-tracking spec's "Advance motion prediction without detection"). The
+            // cached non-Player detections and scoreboard region are reused as-is until the next detection
+            // frame, the same posture _lastKeypoints already has below.
             trackedPlayers = _playerTracker.PredictOnly();
         }
+
+        var otherAnnotations = _lastOtherDetections
+            .Select(d => OverlayAnnotation.ForBox(d.Left, d.Top, d.Right, d.Bottom, d.ClassName, d.ClassName))
+            .ToList();
 
         var playerAnnotations = trackedPlayers
             .Select(t => OverlayAnnotation.ForBox(t.Left, t.Top, t.Right, t.Bottom, $"#{t.TrackId}"))
@@ -285,7 +351,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             Dispatcher.UIThread.Post(() =>
             {
                 RawOverlay.CurrentFrame = bitmap;
-                RawOverlay.SetAnnotations(playerAnnotations);
+                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations));
             });
             return;
         }
@@ -299,7 +365,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             _lastScoreboardCheckAt = frame.Timestamp;
             try
             {
-                var region = _profileStore.Load(sourceKey)?.ScoreboardRegion ?? NormalizedRect.DefaultScoreboardRegion;
+                // Manual override always wins outright (so a user's fix for a source where automatic placement
+                // is wrong doesn't silently stop working), then the most recent detected scoreboard-object
+                // union box, then the fixed default - ocr/scoreboard-recognition spec's crop-region precedence.
+                var region = _profileStore.Load(sourceKey)?.ScoreboardRegion ?? _lastScoreboardObjectRegion ?? NormalizedRect.DefaultScoreboardRegion;
 
                 // The scoreboard is part of the broadcast itself, so once the playback region is known, position
                 // it relative to that region instead of the full captured frame - region (e.g. the default's
@@ -341,7 +410,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             Dispatcher.UIThread.Post(() =>
             {
                 RawOverlay.CurrentFrame = bitmap;
-                RawOverlay.SetAnnotations(playerAnnotations);
+                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations));
             });
             return;
         }
@@ -405,7 +474,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         Dispatcher.UIThread.Post(() =>
         {
             RawOverlay.CurrentFrame = bitmap;
-            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypointAnnotations));
+            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypointAnnotations).Concat(otherAnnotations));
 
             Minimap.HasValidCalibration = calibration is not null;
             if (currentGeometry is not null)

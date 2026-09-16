@@ -12,6 +12,25 @@ namespace NBA.App.Views;
 
 public partial class RawOverlayView : UserControl
 {
+    // One fixed color per `vision/on-court-object-detection` non-Player class, chosen for visual distinctness
+    // against each other and against the tracked-player boxes' fixed red below (design.md's "small fixed
+    // palette... no need for a configurable/themeable color system for a debug/visibility overlay" decision).
+    // Tracked-player boxes (StyleKey unset) and anything unrecognized fall back to FallbackBoxBrush, preserving
+    // today's look exactly.
+    private static readonly IReadOnlyDictionary<string, IBrush> ClassBoxBrushes = new Dictionary<string, IBrush>
+    {
+        ["Ball"] = new SolidColorBrush(Color.Parse("#FFA500")),
+        ["Hoop"] = new SolidColorBrush(Color.Parse("#FFFF00")),
+        ["Period"] = new SolidColorBrush(Color.Parse("#00BFFF")),
+        ["Ref"] = new SolidColorBrush(Color.Parse("#8A2BE2")),
+        ["Shot Clock"] = new SolidColorBrush(Color.Parse("#00FF7F")),
+        ["Team Name"] = new SolidColorBrush(Color.Parse("#1E90FF")),
+        ["Team Points"] = new SolidColorBrush(Color.Parse("#FF69B4")),
+        ["Time Remaining"] = new SolidColorBrush(Color.Parse("#40E0D0")),
+    };
+
+    private static readonly IBrush FallbackBoxBrush = new SolidColorBrush(Color.Parse("#FF4040"));
+
     private bool _visualsRebuildScheduled;
 
     public RawOverlayView()
@@ -95,11 +114,14 @@ public partial class RawOverlayView : UserControl
             // (X,Y) actually is, rather than assuming callers always hand us an already-normalized box.
             var width = visual.Width!.Value;
             var height = visual.Height!.Value;
+            var stroke = visual.StyleKey is { } styleKey && ClassBoxBrushes.TryGetValue(styleKey, out var classBrush)
+                ? classBrush
+                : FallbackBoxBrush;
             var rectangle = new Rectangle
             {
                 Width = Math.Abs(width),
                 Height = Math.Abs(height),
-                Stroke = new SolidColorBrush(Color.Parse("#FF4040")),
+                Stroke = stroke,
                 StrokeThickness = 2,
             };
             Canvas.SetLeft(rectangle, width < 0 ? visual.X + width : visual.X);
