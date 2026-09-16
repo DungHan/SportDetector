@@ -8,4 +8,5 @@ obj/
 # Large model weights - keep local only
 models/sport-classifier.onnx
 models/court-keypoints.basketball.onnx
+models/player-detection.onnx
 tools/clip-text-encoder/text_model.onnx
