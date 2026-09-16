@@ -14,10 +14,20 @@ public sealed record GreedyMatchResult(
 /// </summary>
 public static class GreedyIouMatcher
 {
+    /// <summary>
+    /// <paramref name="isEligible"/>, when supplied, is checked (predicted-index, detection-index - positions
+    /// within <paramref name="predictedBoxes"/>/<paramref name="detectionBoxes"/>) alongside the IoU threshold
+    /// before a pair becomes a match candidate at all - an additional caller-supplied veto on top of spatial
+    /// overlap (e.g. <c>ByteTrackPlayerTracker</c>'s team-color consistency check), checked once per candidate
+    /// pair, not re-checked as claims happen. Defaults to <c>null</c> (every above-threshold pair eligible),
+    /// so existing callers are unaffected and this matcher itself stays appearance-agnostic - see design.md's
+    /// "keep GreedyIouMatcher generically reusable" decision.
+    /// </summary>
     public static GreedyMatchResult Match(
         IReadOnlyList<(double Left, double Top, double Right, double Bottom)> predictedBoxes,
         IReadOnlyList<(double Left, double Top, double Right, double Bottom)> detectionBoxes,
-        double iouThreshold)
+        double iouThreshold,
+        Func<int, int, bool>? isEligible = null)
     {
         var candidates = new List<(int PredictedIndex, int DetectionIndex, double Iou)>();
         for (var p = 0; p < predictedBoxes.Count; p++)
@@ -25,7 +35,7 @@ public static class GreedyIouMatcher
             for (var d = 0; d < detectionBoxes.Count; d++)
             {
                 var iou = Iou(predictedBoxes[p], detectionBoxes[d]);
-                if (iou > iouThreshold)
+                if (iou > iouThreshold && (isEligible is null || isEligible(p, d)))
                 {
                     candidates.Add((p, d, iou));
                 }

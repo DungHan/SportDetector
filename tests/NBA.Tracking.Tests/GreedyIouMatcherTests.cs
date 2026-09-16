@@ -48,4 +48,30 @@ public class GreedyIouMatcherTests
         Assert.Empty(result.UnmatchedPredicted);
         Assert.Equal([0], result.UnmatchedDetections); // the lower-IoU detection stays unmatched
     }
+
+    [Fact]
+    public void Match_IsEligiblePredicateRejectsPair_ExcludesItDespiteSufficientIou()
+    {
+        var predicted = new[] { (0.0, 0.0, 10.0, 10.0) };
+        var detections = new[] { (1.0, 1.0, 11.0, 11.0) }; // heavily overlapping - would match without the predicate
+
+        var result = GreedyIouMatcher.Match(predicted, detections, iouThreshold: 0.3, isEligible: (_, _) => false);
+
+        Assert.Empty(result.Matches);
+        Assert.Equal([0], result.UnmatchedPredicted);
+        Assert.Equal([0], result.UnmatchedDetections);
+    }
+
+    [Fact]
+    public void Match_IsEligiblePredicateAcceptsPair_MatchesAsUsual()
+    {
+        var predicted = new[] { (0.0, 0.0, 10.0, 10.0) };
+        var detections = new[] { (1.0, 1.0, 11.0, 11.0) };
+
+        var result = GreedyIouMatcher.Match(predicted, detections, iouThreshold: 0.3, isEligible: (_, _) => true);
+
+        var match = Assert.Single(result.Matches);
+        Assert.Equal(0, match.PredictedIndex);
+        Assert.Equal(0, match.DetectionIndex);
+    }
 }

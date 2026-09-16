@@ -85,10 +85,57 @@ public class OnnxPlayerDetectorTests
     public void Detect_FiltersOutWrongClass_EvenWithHighConfidence()
     {
         // avgR = avgG = avgB = 0: box0/box1/box2 fall below the confidence threshold. box3 has a constant
-        // 0.99 confidence but classId 1, which does not match the default personClassId (0), so it must
+        // 0.99 confidence but classId 1, which does not match the default playerClassId (0), so it must
         // never be returned regardless of how confident the model is.
         using var detector = new OnnxPlayerDetector(FixturePath, inputSize: 4, inputName: "input");
         var pixels = SolidBgra8(4, 4, b: 0, g: 0, r: 0);
+
+        var detections = detector.Detect(pixels, width: 4, height: 4, stride: 4 * 4);
+
+        Assert.Empty(detections);
+    }
+
+    [Fact]
+    public void Detect_SingleQualifyingBox_ReportsUpperBodyMeanColor()
+    {
+        // Same setup as Detect_SingleQualifyingBox_ScalesCoordinatesIndependentlyByWidthAndHeight - box2
+        // qualifies. Every pixel in the source frame is the same solid color, so the upper-body sub-rectangle
+        // (whatever its exact bounds) must average to that exact color.
+        using var detector = new OnnxPlayerDetector(FixturePath, inputSize: 4, inputName: "input");
+        var pixels = SolidBgra8(8, 4, b: 255, g: 0, r: 0);
+
+        var detections = detector.Detect(pixels, width: 8, height: 4, stride: 8 * 4);
+
+        var box = Assert.Single(detections);
+        Assert.True(box.Color.HasValue);
+        Assert.Equal(0, box.Color!.Value.R);
+        Assert.Equal(0, box.Color.Value.G);
+        Assert.Equal(255, box.Color.Value.B);
+    }
+
+    [Fact]
+    public void Detect_NonDefaultPlayerClassId_ReadsConfiguredChannelInsteadOfHardcodedOne()
+    {
+        // box3 has a constant 0.99 confidence on the *other* class channel (classId 1, not the default 0).
+        // Configuring playerClassId: 1 must make it the one channel actually read - proving the class channel
+        // is driven by the constructor parameter, not hardcoded to channel 4/classId 0.
+        using var detector = new OnnxPlayerDetector(FixturePath, inputSize: 4, inputName: "input", playerClassId: 1);
+        var pixels = SolidBgra8(4, 4, b: 0, g: 0, r: 0);
+
+        var detections = detector.Detect(pixels, width: 4, height: 4, stride: 4 * 4);
+
+        var box = Assert.Single(detections);
+        Assert.Equal(0.99f, box.Confidence, precision: 3);
+    }
+
+    [Fact]
+    public void Detect_PlayerClassIdOutOfRangeForModelsClassCount_ReturnsZeroDetectionsRatherThanThrowing()
+    {
+        // The fixture model has numClasses=2 (valid indices 0-1). An index beyond that must degrade to zero
+        // detections (matching the rest of this pipeline's "no usable signal -> empty, not an exception"
+        // posture), not throw an IndexOutOfRangeException reading past the output tensor's channel range.
+        using var detector = new OnnxPlayerDetector(FixturePath, inputSize: 4, inputName: "input", playerClassId: 5);
+        var pixels = SolidBgra8(4, 4, b: 255, g: 255, r: 255);
 
         var detections = detector.Detect(pixels, width: 4, height: 4, stride: 4 * 4);
 

@@ -7,6 +7,9 @@ public class ByteTrackPlayerTrackerTests
     private static PlayerDetection Box(double left, double top, double right, double bottom, float confidence) =>
         new(left, top, right, bottom, confidence);
 
+    private static PlayerDetection Box(double left, double top, double right, double bottom, float confidence, (byte R, byte G, byte B) color) =>
+        new(left, top, right, bottom, confidence, color);
+
     [Fact]
     public void Update_SmoothlyMovingHighConfidenceDetection_KeepsSameTrackId()
     {
@@ -216,5 +219,152 @@ public class ByteTrackPlayerTrackerTests
         tracker.PredictOnly();
         var afterBuffer = tracker.Update([]);
         Assert.Empty(afterBuffer);
+    }
+
+    private static readonly (byte R, byte G, byte B) Red = (250, 10, 10);
+    private static readonly (byte R, byte G, byte B) Blue = (10, 10, 250);
+
+    [Fact]
+    public void Update_ColorMismatchedPair_NotAssociatedDespiteIouOverlap()
+    {
+        var tracker = new ByteTrackPlayerTracker();
+
+        // Two well-separated tracks, seeded with distinct colors.
+        var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red), Box(500, 500, 510, 510, 0.9f, Blue)]);
+        Assert.Equal(2, seeded.Count);
+        var trackAId = seeded.Single(t => t.Left < 100).TrackId;
+        var trackBId = seeded.Single(t => t.Left > 100).TrackId;
+
+        // Next frame: a detection lands right on top of each track's predicted position, but with the *other*
+        // track's color - a color-swap. IoU alone would match each track to the nearby box; the color veto
+        // must block both, since this frame's two colors are well-separated (a real two-way split).
+        var result = tracker.Update([Box(1, 1, 11, 11, 0.9f, Blue), Box(501, 501, 511, 511, 0.9f, Red)]);
+
+        // Neither original track absorbed the mismatched-color detection at its own position - each stays
+        // alive (unmatched, still visible) and each mismatched detection spawns its own new track instead of
+        // being merged into the nearby track. Proven by track count (4, not 2) and by both original IDs
+        // surviving as distinct, still-live tracks.
+        Assert.Equal(4, result.Count);
+        Assert.Contains(result, t => t.TrackId == trackAId);
+        Assert.Contains(result, t => t.TrackId == trackBId);
+    }
+
+    [Fact]
+    public void Update_ColorMatchedPair_AssociatesNormally()
+    {
+        var tracker = new ByteTrackPlayerTracker();
+
+        var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red), Box(500, 500, 510, 510, 0.9f, Blue)]);
+        var trackAId = seeded.Single(t => t.Left < 100).TrackId;
+        var trackBId = seeded.Single(t => t.Left > 100).TrackId;
+
+        // Same shape as the mismatch test above, but colors line up with each track's own seeded color.
+        var result = tracker.Update([Box(1, 1, 11, 11, 0.9f, Red), Box(501, 501, 511, 511, 0.9f, Blue)]);
+
+        // Normal IoU association proceeds: same two track IDs, no new tracks spawned, boxes updated to the
+        // exact matched detection boxes (proving a real match happened, not just unmatched coasting).
+        Assert.Equal(2, result.Count);
+        var trackA = Assert.Single(result, t => t.TrackId == trackAId);
+        var trackB = Assert.Single(result, t => t.TrackId == trackBId);
+        Assert.Equal(1, trackA.Left);
+        Assert.Equal(501, trackB.Left);
+    }
+
+    [Fact]
+    public void Update_FewerThanTwoColoredDetectionsThisFrame_VetoSkipped_IouOnlyAssociationApplies()
+    {
+        var tracker = new ByteTrackPlayerTracker();
+
+        var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
+        var trackAId = Assert.Single(seeded).TrackId;
+
+        // Only one detection this frame (mismatched color) - fewer than two colored detections means no real
+        // two-way split can be computed, so the veto self-disables and IoU alone decides the match.
+        var result = tracker.Update([Box(1, 1, 11, 11, 0.9f, Blue)]);
+
+        var track = Assert.Single(result);
+        Assert.Equal(trackAId, track.TrackId);
+        Assert.Equal(1, track.Left); // matched to the new box despite the color mismatch
+    }
+
+    [Fact]
+    public void Update_CentroidsTooCloseTogether_VetoSkipped_IouOnlyAssociationApplies()
+    {
+        var tracker = new ByteTrackPlayerTracker();
+
+        var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
+        var trackAId = Assert.Single(seeded).TrackId;
+
+        // This frame's two detections carry near-identical colors (blue-ish, close together) - no real
+        // two-color split exists, so the minimum-centroid-separation safeguard disables the veto even though
+        // both colors clearly disagree with the track's own (red) seeded color.
+        var nearBlue1 = ((byte)10, (byte)10, (byte)250);
+        var nearBlue2 = ((byte)12, (byte)9, (byte)248);
+        var result = tracker.Update([Box(1, 1, 11, 11, 0.9f, nearBlue1), Box(900, 900, 910, 910, 0.9f, nearBlue2)]);
+
+        var trackA = Assert.Single(result, t => t.TrackId == trackAId);
+        Assert.Equal(1, trackA.Left); // matched despite the color mismatch, since the veto was inactive
+    }
+
+    [Fact]
+    public void Update_NewlySpawnedTrackColor_IsSeededFromSpawningDetection_AndLaterInfluencesTheVeto()
+    {
+        var tracker = new ByteTrackPlayerTracker();
+
+        // An unrelated track, spatially far from everything below for the rest of this test - its own
+        // eventual fate (matched, unmatched, terminated) doesn't matter, since it never has IoU overlap with
+        // any later box here.
+        tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
+
+        // A brand-new detection, nowhere near any existing track - an ordinary spawn (spawning never consults
+        // the color veto at all, per the type-level doc comment - nothing here could block it even in
+        // principle). Seeded, if spawning correctly seeds a track's color, with this detection's own (blue)
+        // color.
+        var afterSpawn = tracker.Update([Box(200, 200, 210, 210, 0.9f, Blue)]);
+        var spawnedTrackId = Assert.Single(afterSpawn, t => t.Left > 100).TrackId;
+
+        // A third frame: a detection lands right on the spawned track's position with a *conflicting* (red)
+        // color, alongside another far-away, differently-colored detection for a valid two-way split this
+        // frame. If the spawned track's color was really seeded to blue, this conflicting detection must be
+        // vetoed (the spawned track stays unmatched at its own position, and a new track spawns for the
+        // conflicting detection instead); if seeding had failed (color left null), the veto would never
+        // trigger (a colorless track is always eligible) and the spawned track would incorrectly jump to this
+        // conflicting detection's box.
+        var result = tracker.Update([Box(202, 202, 212, 212, 0.9f, Red), Box(600, 600, 610, 610, 0.9f, Blue)]);
+
+        var spawnedTrack = Assert.Single(result, t => t.TrackId == spawnedTrackId);
+        Assert.Equal(200, spawnedTrack.Left); // still at its own predicted position, not the conflicting detection's box
+    }
+
+    [Fact]
+    public void Update_RepeatedlyMatchedAgainstADifferentColor_EmaConvergesAwayFromTheSeededColor()
+    {
+        // Track.Color has no public accessor (design.md: an internal appearance signal, never rendered), so
+        // convergence is observed indirectly through its effect on the veto, not read directly.
+        var tracker = new ByteTrackPlayerTracker();
+
+        var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
+        var trackId = Assert.Single(seeded).TrackId;
+
+        // Fifteen frames matched against the *same* position with a Blue detection - only one detection per
+        // frame, so the veto self-disables each time (see the "fewer than two colored detections" test above)
+        // and the match always proceeds by IoU alone, letting the color EMA drift each frame regardless of
+        // agreement. At colorEmaAlpha's default (0.3), the seeded Red's remaining weight after 15 steps is
+        // 0.7^15 (~0.5%) - the track's color estimate should be almost entirely Blue by the end.
+        for (var i = 0; i < 15; i++)
+        {
+            var step = tracker.Update([Box(0, 0, 10, 10, 0.9f, Blue)]);
+            Assert.Equal(trackId, Assert.Single(step).TrackId);
+        }
+
+        // Now present the *original* seeded color (Red) back at the track's position, alongside a far-away
+        // Blue detection for a valid two-way split. If the EMA had truly converged to Blue, this Red detection
+        // - the track's own long-abandoned original color - must now be vetoed as a mismatch; if convergence
+        // never actually happened (e.g. a no-op EMA update), the track would still think of itself as Red and
+        // would match this detection normally.
+        var result = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red), Box(500, 500, 510, 510, 0.9f, Blue)]);
+
+        var track = Assert.Single(result, t => t.TrackId == trackId);
+        Assert.Equal(0, track.Left); // stayed at its own predicted position - the Red detection was vetoed, not matched
     }
 }

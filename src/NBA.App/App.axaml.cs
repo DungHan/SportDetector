@@ -65,6 +65,11 @@ public partial class App : Application
             IPlayerDetector playerDetector = File.Exists(playerDetectionModelPath)
                 ? new OnnxPlayerDetector(
                     playerDetectionModelPath,
+                    // Matches this specific model's export size (models/README.md's "player-detection.onnx"
+                    // section: verified imgsz=[1280,1280] from the file's own embedded metadata) - the library
+                    // default of 640 assumes a stock yolov8n-shaped export and would letterbox/resize to the
+                    // wrong size against this model, scrambling every box's decoded coordinates.
+                    inputSize: 1280,
                     // Lowered from the library defaults (confidenceThreshold: 0.5, iouThreshold: 0.45): real
                     // gameplay footage was visibly under-detecting crowded/distant players. A lower confidence
                     // floor keeps more real (if less certain) boxes - ByteTrackPlayerTracker's own two-stage
@@ -74,9 +79,13 @@ public partial class App : Application
                     // treat two adjacent players (e.g. in a crowded paint) as duplicate boxes for the same one.
                     confidenceThreshold: 0.35f,
                     iouThreshold: 0.6f,
+                    // This model's own embedded class-name metadata (models/README.md) confirms `Player` is
+                    // class index 3, distinct from `Ref` (4) and the other on-court object classes - the
+                    // library default of 0 would silently read the "Ball" channel instead.
+                    playerClassId: 3,
                     // TEMPORARY diagnostic (remove once real-world confidence is calibrated): logs the max
-                    // raw person-confidence seen across all 8400 candidates each frame, and how many passed
-                    // the threshold, so a "nothing renders" report can be told apart from "genuinely below
+                    // raw player-confidence seen across all candidates each frame, and how many passed the
+                    // threshold, so a "nothing renders" report can be told apart from "genuinely below
                     // threshold" vs "always ~0, likely a wiring bug" without guessing.
                     onDiagnostics: (maxConfidence, aboveThresholdCount) =>
                         Console.WriteLine($"[player-detect] maxConfidence={maxConfidence:P1} aboveThreshold={aboveThresholdCount}"))
