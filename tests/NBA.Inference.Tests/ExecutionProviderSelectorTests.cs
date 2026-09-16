@@ -5,27 +5,41 @@ namespace NBA.Inference.Tests;
 public class ExecutionProviderSelectorTests
 {
     [Fact]
-    public void CreateSessionOptions_PreferDirectMlFalse_AlwaysReturnsCpu()
+    public void CreateSessionOptions_PreferGpuFalse_AlwaysReturnsCpu()
     {
-        var selection = ExecutionProviderSelector.CreateSessionOptions(preferDirectMl: false);
+        var selection = ExecutionProviderSelector.CreateSessionOptions(preferGpu: false);
 
         Assert.Equal(ExecutionProviderKind.Cpu, selection.Provider);
         selection.Options.Dispose();
     }
 
     [Fact]
-    public void CreateSessionOptions_OnNonWindows_FallsBackToCpu()
+    public void CreateSessionOptions_OnMacOS_PrefersCoreMl()
     {
-        // This test machine is not Windows, so DirectML is never attempted - this exercises exactly the
-        // "DirectML unavailable" path from the spec (OperatingSystem.IsWindows() gate), even though it
-        // can't exercise the Windows-but-no-capable-GPU variant of that same fallback. Skip gracefully if
-        // this ever runs on a Windows CI agent instead.
-        if (OperatingSystem.IsWindows())
+        // This test machine is macOS, and the base ONNX Runtime package bundles CoreML EP support for
+        // osx-arm64/osx-x64, so this exercises the "CoreML available" path from the spec.
+        if (!OperatingSystem.IsMacOS())
         {
             return;
         }
 
-        var selection = ExecutionProviderSelector.CreateSessionOptions(preferDirectMl: true);
+        var selection = ExecutionProviderSelector.CreateSessionOptions(preferGpu: true);
+
+        Assert.Equal(ExecutionProviderKind.CoreMl, selection.Provider);
+        selection.Options.Dispose();
+    }
+
+    [Fact]
+    public void CreateSessionOptions_OnNeitherMacNorWindows_FallsBackToCpu()
+    {
+        // Linux (and any other non-macOS, non-Windows platform) has no GPU EP branch today, so it always
+        // falls straight to CPU regardless of preferGpu.
+        if (OperatingSystem.IsMacOS() || OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var selection = ExecutionProviderSelector.CreateSessionOptions(preferGpu: true);
 
         Assert.Equal(ExecutionProviderKind.Cpu, selection.Provider);
         selection.Options.Dispose();

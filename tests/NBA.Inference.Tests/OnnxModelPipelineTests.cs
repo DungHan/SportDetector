@@ -42,13 +42,17 @@ public class OnnxModelPipelineTests
     }
 
     [Fact]
-    public void Run_ReportsCpuProvider_OnThisNonWindowsMachine()
+    public void Run_ReportsPlatformProvider_OnThisMachine()
     {
         using var pipeline = new OnnxModelPipeline<float[], float[]>(
             FixturePath,
             preprocess: input => [NamedOnnxValue.CreateFromTensor("input", new DenseTensor<float>(input, [1, 4]))],
             postprocess: results => results.First(r => r.Name == "output").AsTensor<float>().ToArray());
 
-        Assert.Equal(ExecutionProviderKind.Cpu, pipeline.Provider);
+        // macOS has CoreML EP support built into the base ONNX Runtime package, so it's expected to report
+        // CoreMl here rather than falling back to Cpu. Any other platform without a GPU EP branch (e.g. Linux)
+        // falls back to Cpu.
+        var expected = OperatingSystem.IsMacOS() ? ExecutionProviderKind.CoreMl : ExecutionProviderKind.Cpu;
+        Assert.Equal(expected, pipeline.Provider);
     }
 }

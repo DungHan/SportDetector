@@ -7,8 +7,8 @@ namespace NBA.Inference;
 /// Generic preprocess -> run -> postprocess pipeline around one loaded ONNX model. Every model this project
 /// loads (court keypoints today; player/ball/jersey/OCR models in later phases) gets its own instance of this
 /// with model-specific pre/postprocess delegates, reusing the same session management, execution-provider
-/// fallback, and latency measurement. See design.md's "Inference: ONNX Runtime with DirectML→CPU fallback,
-/// one model = one pipeline instance".
+/// fallback, and latency measurement. See design.md's "Inference: ONNX Runtime with platform GPU EP -> CPU
+/// fallback, one model = one pipeline instance".
 /// </summary>
 public sealed class OnnxModelPipeline<TInput, TOutput> : IDisposable
 {
@@ -22,9 +22,9 @@ public sealed class OnnxModelPipeline<TInput, TOutput> : IDisposable
         string modelPath,
         Func<TInput, IReadOnlyCollection<NamedOnnxValue>> preprocess,
         Func<IDisposableReadOnlyCollection<DisposableNamedOnnxValue>, TOutput> postprocess,
-        bool preferDirectMl = true)
+        bool preferGpu = true)
     {
-        var selection = ExecutionProviderSelector.CreateSessionOptions(preferDirectMl);
+        var selection = ExecutionProviderSelector.CreateSessionOptions(preferGpu);
         Provider = selection.Provider;
         _session = OnnxModelLoader.Load(modelPath, selection.Options);
         _preprocess = preprocess;

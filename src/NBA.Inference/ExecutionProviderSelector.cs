@@ -3,28 +3,57 @@ using Microsoft.ML.OnnxRuntime;
 namespace NBA.Inference;
 
 /// <summary>
-/// Selects an ONNX Runtime execution provider: try DirectML on Windows, fall back to CPU if unavailable.
-/// See the inference/onnx-runtime spec's "Select execution provider with fallback" requirement - CPU fallback
-/// is a hard requirement (the app must keep working, just slower), not an optimization.
+/// Selects an ONNX Runtime execution provider per platform, always falling back to CPU if the preferred
+/// provider is unavailable: macOS -> CoreML (Apple Neural Engine/Metal GPU), Windows -> CUDA (NVIDIA GPU) then
+/// DirectML (Intel/AMD/any DX12 GPU). CPU fallback is a hard requirement (the app must keep working, just
+/// slower), not an optimization - see the inference/onnx-runtime spec's "Select execution provider with
+/// fallback" requirement.
 /// </summary>
 public static class ExecutionProviderSelector
 {
     public readonly record struct Selection(SessionOptions Options, ExecutionProviderKind Provider);
 
-    public static Selection CreateSessionOptions(bool preferDirectMl = true)
+    public static Selection CreateSessionOptions(bool preferGpu = true)
     {
-        if (preferDirectMl && OperatingSystem.IsWindows())
+        if (preferGpu && OperatingSystem.IsMacOS())
         {
             var options = NewSessionOptions();
             try
             {
-                options.AppendExecutionProvider_DML(deviceId: 0);
-                return new Selection(options, ExecutionProviderKind.DirectMl);
+                options.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_USE_NONE);
+                return new Selection(options, ExecutionProviderKind.CoreMl);
+            }
+            catch
+            {
+                // No CoreML support in this ONNX Runtime build - dispose the half-configured options and fall
+                // back further down.
+                options.Dispose();
+            }
+        }
+        else if (preferGpu && OperatingSystem.IsWindows())
+        {
+            var cudaOptions = NewSessionOptions();
+            try
+            {
+                cudaOptions.AppendExecutionProvider_CUDA(deviceId: 0);
+                return new Selection(cudaOptions, ExecutionProviderKind.Cuda);
+            }
+            catch
+            {
+                // No NVIDIA GPU/CUDA runtime present - dispose and try DirectML instead.
+                cudaOptions.Dispose();
+            }
+
+            var dmlOptions = NewSessionOptions();
+            try
+            {
+                dmlOptions.AppendExecutionProvider_DML(deviceId: 0);
+                return new Selection(dmlOptions, ExecutionProviderKind.DirectMl);
             }
             catch
             {
                 // No DirectML-capable device/drivers - dispose the half-configured options and fall back to CPU.
-                options.Dispose();
+                dmlOptions.Dispose();
             }
         }
 
