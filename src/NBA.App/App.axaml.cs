@@ -57,7 +57,13 @@ public partial class App : Application
             }
 
             ICourtKeypointDetector keypointDetector = File.Exists(keypointModelPath)
-                ? new OnnxCourtKeypointDetector(keypointModelPath, BasketballGeometryDefinition())
+                ? new OnnxCourtKeypointDetector(
+                    keypointModelPath,
+                    BasketballGeometryDefinition(),
+                    // The active model (models/README.md's "lweda retrain") was re-exported at 1280x1280 -
+                    // the library default of 640 would letterbox/resize to the wrong size against this file,
+                    // scrambling every decoded keypoint's pixel position.
+                    inputSize: 1280)
                 : new NullCourtKeypointDetector(SportType.Basketball);
 
             // No trained player-detection model is shipped in this change yet (see design.md's risk entries
