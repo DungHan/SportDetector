@@ -6,6 +6,5 @@ obj/
 .DS_Store
 
 # Large model weights - keep local only
-models/
-!models/README.md
+models/*.onnx
 tools/clip-text-encoder/text_model.onnx

@@ -4,11 +4,28 @@ Exported ONNX model files consumed by `NBA.Inference`. Models are **not trained 
 
 ## Naming convention
 
-`<capability>.<sport>.onnx`, for example:
+`<sport>_<scene>_<capability>_<resolution>_<architecture>.onnx`, for example:
 
-- `court-keypoints.basketball.onnx` — court keypoint detection model consumed by `vision/court-calibration`.
-- `sport-classifier.onnx` — the sport classification model consumed by `vision/sport-classification` (not sport-specific by definition, so no `<sport>` segment).
-- `player-detection.onnx` — the player-detection model consumed by `vision/player-detection` (not sport-specific by definition — a person detector works the same regardless of sport — so no `<sport>` segment).
+- `basketball_nba_court-keypoints_1280_yolov8n-pose.onnx` — court keypoint detection model consumed by `vision/court-calibration`, trained on real NBA broadcast frames (`nba` scene), 1280x1280 input, Ultralytics YOLOv8n-pose.
+- `basketball_nba_player-detection_1280_yolov8n.onnx` — the player-detection model consumed by `vision/player-detection`, real NBA broadcast frames, 1280x1280 input, Ultralytics YOLOv8n.
+
+`<scene>` describes the visual domain the training data came from, since this genuinely affects transferability (see `init-nba-vision-platform/design.md`'s broadcast-vs-game-rendering caveat for court-keypoint models specifically) — always written explicitly, even when there's currently only one source:
+
+- `nba` — real broadcast footage.
+- `2k` — video-game captures (e.g. NBA 2K-style titles).
+- `common` — training data mixes both, and the model is expected to generalize across them.
+
+`<sport>` (and therefore `<scene>`, which only makes sense relative to a sport) is omitted entirely for models that are not sport-specific by definition — the model's job is cross-sport, so there is no single scene to name either:
+
+- `sport-classifier_224_clip-vitb32.onnx` — the sport classification model consumed by `vision/sport-classification` (its whole job is to work across sports, so no `<sport>`/`<scene>` segment; `224` is the CLIP vision encoder's input size, `clip-vitb32` its architecture).
+
+**Current status**: the three files actually in this directory today (`court-keypoints.basketball.onnx`, `player-detection.onnx`, `sport-classifier.onnx`) still use the old `<capability>.<sport>.onnx` scheme — they haven't been renamed yet because renaming implies asserting facts (exact scene, exact resolution/architecture) that should be verified against the real file at rename time, not guessed retroactively. Rename each file (and update its entry in `models.json` below) the next time it's actually replaced by a new export, rather than as a one-off bulk rename.
+
+## `models.json`
+
+`App.axaml.cs` no longer hardcodes model filenames or the per-model tunables that are tied to a specific export (input resolution, class list, confidence/IoU thresholds) - it loads them from `models/models.json` via `NBA.App.Services.ModelsConfig`. A missing file, a missing section, or a missing individual field all silently fall back to that field's default (today's previously-hardcoded value, declared on the corresponding record in `ModelsConfig.cs`) - so this file is optional, and can override as little or as much as needed. This means swapping in a retrained/re-exported model - a new resolution, a different class ordering, retuned thresholds, or (once actually renamed per the convention above) a new filename - only means editing this JSON file, not `App.axaml.cs`.
+
+A subset of `courtKeypoints`'s two thresholds (`keypointConfidenceThreshold`, `detectionConfidenceThreshold`) are also live-adjustable from the toolbar in the running app (see `KeypointDetectionSettingsViewModel`) - `models.json` only sets their *starting* value for a session, not a hard ceiling.
 
 A model file is not required for the application to run: every model-backed capability has a documented degraded/manual path when its model file is absent (e.g., manual court calibration, "unknown" sport classification) — see the relevant `specs/*/spec.md` for the exact fallback behavior.
 

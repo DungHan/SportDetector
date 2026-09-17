@@ -25,11 +25,16 @@ public partial class App : Application
         {
             var profileStore = new FileSourceProfileStore(GetProfileDirectory());
 
-            var sportClassifierModelPath = Path.Combine(GetModelsDirectory(), "sport-classifier.onnx");
-            var sportPromptsPath = Path.Combine(GetModelsDirectory(), "sport-classifier-prompts.clip.json");
-            var keypointModelPath = Path.Combine(GetModelsDirectory(), "court-keypoints.basketball.onnx");
-            var playerDetectionModelPath = Path.Combine(GetModelsDirectory(), "player-detection.onnx");
-            var jerseyNumberModelPath = Path.Combine(GetModelsDirectory(), "jersey-number.onnx");
+            // See models/README.md's "Naming convention" - values here come from models/models.json when
+            // present, falling back to today's defaults (see ModelsConfig) when the file, a section, or an
+            // individual field is absent, so swapping a retrained model only means editing that JSON file.
+            var modelsConfig = ModelsConfig.LoadFromJsonOrDefault(Path.Combine(GetModelsDirectory(), "models.json"));
+
+            var sportClassifierModelPath = Path.Combine(GetModelsDirectory(), modelsConfig.SportClassifier.ModelPath);
+            var sportPromptsPath = Path.Combine(GetModelsDirectory(), modelsConfig.SportClassifier.PromptsPath);
+            var keypointModelPath = Path.Combine(GetModelsDirectory(), modelsConfig.CourtKeypoints.ModelPath);
+            var playerDetectionModelPath = Path.Combine(GetModelsDirectory(), modelsConfig.PlayerDetection.ModelPath);
+            var jerseyNumberModelPath = Path.Combine(GetModelsDirectory(), modelsConfig.JerseyNumber.ModelPath);
 
             // No trained keypoint model is shipped in this change yet (see design.md's risk entries) - fall
             // back to the degraded/manual-only path rather than failing to start. The sport classifier now has
@@ -40,6 +45,7 @@ public partial class App : Application
                 ? new ClipZeroShotSportClassifier(
                     sportClassifierModelPath,
                     ClipPromptEmbeddings.LoadFromJson(sportPromptsPath),
+                    inputSize: modelsConfig.SportClassifier.InputSize,
                     // Temporary calibration aid (see design.md's "must recalibrate the confidence threshold"
                     // note) - logs every prompt's score so we can see *why* a frame landed on "unknown" instead
                     // of just that it did. Remove once the threshold/prompt list are actually calibrated.
@@ -60,10 +66,13 @@ public partial class App : Application
                 ? new OnnxCourtKeypointDetector(
                     keypointModelPath,
                     BasketballGeometryDefinition(),
-                    // The active model (models/README.md's "lweda retrain") was re-exported at 1280x1280 -
-                    // the library default of 640 would letterbox/resize to the wrong size against this file,
-                    // scrambling every decoded keypoint's pixel position.
-                    inputSize: 1280)
+                    // Values come from models/models.json (see ModelsConfig) - the active model (models/README.md's
+                    // "lweda retrain") was re-exported at 1280x1280, so the library's 640 default would
+                    // letterbox/resize to the wrong size against this file, scrambling every decoded keypoint's
+                    // pixel position.
+                    inputSize: modelsConfig.CourtKeypoints.InputSize,
+                    keypointConfidenceThreshold: modelsConfig.CourtKeypoints.KeypointConfidenceThreshold,
+                    detectionConfidenceThreshold: modelsConfig.CourtKeypoints.DetectionConfidenceThreshold)
                 : new NullCourtKeypointDetector(SportType.Basketball);
 
             // No trained player-detection model is shipped in this change yet (see design.md's risk entries
@@ -71,29 +80,30 @@ public partial class App : Application
             IMultiClassObjectDetector multiClassObjectDetector = File.Exists(playerDetectionModelPath)
                 ? new OnnxMultiClassObjectDetector(
                     playerDetectionModelPath,
-                    // This model's own embedded class-name metadata (models/README.md's "player-detection.onnx"
-                    // section, verified via the file's own onnx.metadata_props `names` key) - the order here
-                    // must match that metadata's index order exactly, since classIndex 4+i's channel is decoded
-                    // positionally, not by name.
-                    classNames: ["Ball", "Hoop", "Period", "Player", "Ref", "Shot Clock", "Team Name", "Team Points", "Time Remaining"],
-                    // Matches this specific model's export size (models/README.md's "player-detection.onnx"
+                    // Values come from models/models.json (see ModelsConfig), defaulting to this model's own
+                    // embedded class-name metadata (models/README.md's "player-detection.onnx" section, verified
+                    // via the file's own onnx.metadata_props `names` key) - the order here must match that
+                    // metadata's index order exactly, since classIndex 4+i's channel is decoded positionally,
+                    // not by name.
+                    classNames: modelsConfig.PlayerDetection.ClassNames,
+                    // Defaults to this specific model's export size (models/README.md's "player-detection.onnx"
                     // section: verified imgsz=[1280,1280] from the file's own embedded metadata) - the library
                     // default of 640 assumes a stock yolov8n-shaped export and would letterbox/resize to the
                     // wrong size against this model, scrambling every box's decoded coordinates.
-                    inputSize: 1280,
-                    // Lowered from the library defaults (confidenceThreshold: 0.5, iouThreshold: 0.45): real
-                    // gameplay footage was visibly under-detecting crowded/distant players. A lower confidence
-                    // floor keeps more real (if less certain) boxes - ByteTrackPlayerTracker's own two-stage
-                    // matching (see its type-level doc comment) already treats sub-highConfidenceThreshold
+                    inputSize: modelsConfig.PlayerDetection.InputSize,
+                    // Defaults lowered from the library defaults (confidenceThreshold: 0.5, iouThreshold: 0.45):
+                    // real gameplay footage was visibly under-detecting crowded/distant players. A lower
+                    // confidence floor keeps more real (if less certain) boxes - ByteTrackPlayerTracker's own
+                    // two-stage matching (see its type-level doc comment) already treats sub-highConfidenceThreshold
                     // detections as "low confidence" and only lets them continue existing tracks, so this
                     // doesn't let stray noise spawn new tracks. A higher IoU threshold makes NMS less eager to
                     // treat two adjacent players (e.g. in a crowded paint) as duplicate boxes for the same one.
-                    confidenceThreshold: 0.35f,
-                    iouThreshold: 0.6f,
-                    // This model's own embedded class-name metadata (models/README.md) confirms `Player` is
-                    // class index 3, distinct from `Ref` (4) and the other on-court object classes - the
-                    // library default of 0 would silently read the "Ball" channel instead.
-                    playerClassId: 3,
+                    confidenceThreshold: modelsConfig.PlayerDetection.ConfidenceThreshold,
+                    iouThreshold: modelsConfig.PlayerDetection.IouThreshold,
+                    // Defaults to this model's own embedded class-name metadata (models/README.md) confirming
+                    // `Player` is class index 3, distinct from `Ref` (4) and the other on-court object classes -
+                    // the library default of 0 would silently read the "Ball" channel instead.
+                    playerClassId: modelsConfig.PlayerDetection.PlayerClassId,
                     // TEMPORARY diagnostic (remove once real-world confidence is calibrated): logs the max
                     // raw player-confidence seen across all candidates each frame, and how many passed the
                     // threshold, so a "nothing renders" report can be told apart from "genuinely below
@@ -127,7 +137,10 @@ public partial class App : Application
             // is a pure algorithm over already-in-memory results, not backed by an external model file, so it's
             // always wired unconditionally (same posture as ByteTrackPlayerTracker above).
             IJerseyNumberRecognizer jerseyNumberRecognizer = File.Exists(jerseyNumberModelPath)
-                ? new OnnxJerseyNumberRecognizer(jerseyNumberModelPath)
+                ? new OnnxJerseyNumberRecognizer(
+                    jerseyNumberModelPath,
+                    inputSize: modelsConfig.JerseyNumber.InputSize,
+                    confidenceThreshold: modelsConfig.JerseyNumber.ConfidenceThreshold)
                 : new NullJerseyNumberRecognizer();
             IJerseyNumberVoteAggregator jerseyNumberVoteAggregator = new PluralityJerseyNumberVoteAggregator();
 

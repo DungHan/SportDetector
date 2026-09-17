@@ -1,0 +1,26 @@
+{
+  "sportClassifier": {
+    "modelPath": "sport-classifier.onnx",
+    "promptsPath": "sport-classifier-prompts.clip.json",
+    "inputSize": 224
+  },
+  "courtKeypoints": {
+    "modelPath": "court-keypoints.basketball.onnx",
+    "inputSize": 1280,
+    "keypointConfidenceThreshold": 0.5,
+    "detectionConfidenceThreshold": 0.5
+  },
+  "playerDetection": {
+    "modelPath": "player-detection.onnx",
+    "inputSize": 1280,
+    "classNames": ["Ball", "Hoop", "Period", "Player", "Ref", "Shot Clock", "Team Name", "Team Points", "Time Remaining"],
+    "playerClassId": 3,
+    "confidenceThreshold": 0.35,
+    "iouThreshold": 0.6
+  },
+  "jerseyNumber": {
+    "modelPath": "jersey-number.onnx",
+    "inputSize": 64,
+    "confidenceThreshold": 0.5
+  }
+}
