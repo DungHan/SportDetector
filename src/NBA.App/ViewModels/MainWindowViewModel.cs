@@ -436,6 +436,18 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                 Console.WriteLine($"[keypoint-detect] detection failed for this frame, treating as none: {ex.Message}");
                 _lastKeypoints = [];
             }
+
+            // Try to (re)calibrate from this same detection pass rather than running the detector again -
+            // only while no calibration is persisted yet for this source/sport; once one succeeds,
+            // GetValidCalibration below finds it and this is skipped on later checks.
+            if (_calibrationCoordinator.GetValidCalibration(sourceKey, sport.Value) is null)
+            {
+                var calibrationAttempt = _calibrationCoordinator.TryCalibrateFromKeypoints(sourceKey, sport.Value, _lastKeypoints);
+                if (!calibrationAttempt.Success)
+                {
+                    Console.WriteLine($"[auto-calibrate] {calibrationAttempt.FailureReason}");
+                }
+            }
         }
 
         var keypoints = _lastKeypoints;

@@ -16,6 +16,22 @@ public class CourtCalibrationCoordinatorTests : IDisposable
         new(ToImage(new CourtPoint(28.6512, 15.24)), "BaselineCorner_Right_Far"),
     ];
 
+    // The 9 landmarks BasketballGeometry actually assigns a KeypointIndex to - i.e. the ones a real keypoint
+    // detector (or its stub below) could ever report - spread across both axes so they also clear
+    // CourtCalibrationCoordinator's degenerate-input guard, not just its point-count minimum.
+    private static IReadOnlyList<LandmarkCorrespondence> DetectableCorrespondences() =>
+    [
+        new(ToImage(new CourtPoint(14.3256, 7.62)), "CenterCourt"),
+        new(ToImage(new CourtPoint(5.7912, 7.62)), "FreeThrowLineCenter_Left"),
+        new(ToImage(new CourtPoint(22.86, 7.62)), "FreeThrowLineCenter_Right"),
+        new(ToImage(new CourtPoint(14.3256, 0)), "MidCourtLine_SidelineA"),
+        new(ToImage(new CourtPoint(14.3256, 15.24)), "MidCourtLine_SidelineB"),
+        new(ToImage(new CourtPoint(0, 5.1816)), "PaintCorner_Left_A"),
+        new(ToImage(new CourtPoint(0, 10.0584)), "PaintCorner_Left_B"),
+        new(ToImage(new CourtPoint(28.6512, 5.1816)), "PaintCorner_Right_A"),
+        new(ToImage(new CourtPoint(28.6512, 10.0584)), "PaintCorner_Right_B"),
+    ];
+
     private sealed class StubKeypointDetector(SportType sport, IReadOnlyList<DetectedKeypoint> keypoints) : ICourtKeypointDetector
     {
         public SportType Sport { get; } = sport;
@@ -40,7 +56,7 @@ public class CourtCalibrationCoordinatorTests : IDisposable
     {
         var store = new FileSourceProfileStore(_directory);
         var coordinator = new CourtCalibrationCoordinator(store);
-        var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
+        var keypoints = DetectableCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
         var detector = new StubKeypointDetector(SportType.Basketball, keypoints);
 
         var result = coordinator.TryAutoCalibrate("source-1", SportType.Basketball, detector, new byte[4], 1, 1, 4);
@@ -49,6 +65,55 @@ public class CourtCalibrationCoordinatorTests : IDisposable
         var loaded = store.Load("source-1");
         Assert.NotNull(loaded?.Calibration);
         Assert.Equal(SportType.Basketball, loaded!.Calibration!.Sport);
+    }
+
+    [Fact]
+    public void TryCalibrateFromKeypoints_FewerThanAutoCalibrateMinimum_FailsEvenThoughAboveHomographyMinimum()
+    {
+        var coordinator = new CourtCalibrationCoordinator(new FileSourceProfileStore(_directory));
+        // 4 points clears HomographyCalibrator.MinimumPoints but not the stricter automatic-path threshold.
+        var keypoints = DetectableCorrespondences().Take(4).Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
+
+        var result = coordinator.TryCalibrateFromKeypoints("source-1", SportType.Basketball, keypoints);
+
+        Assert.False(result.Success);
+        Assert.Contains("Not enough", result.FailureReason);
+    }
+
+    [Fact]
+    public void TryCalibrateFromKeypoints_LandmarksAllFromOneCourtRegion_FailsAsInsufficientCoverage()
+    {
+        var coordinator = new CourtCalibrationCoordinator(new FileSourceProfileStore(_directory));
+        // 3 distinct, non-collinear left-side-only landmarks (real court span: only ~20% of length, ~32% of
+        // width), duplicated to clear the point-count minimum without adding any real coverage - a homography
+        // fit only to this corner of the court would extrapolate badly for anything past it.
+        var leftSideOnly = new[] { "PaintCorner_Left_A", "PaintCorner_Left_B", "FreeThrowLineCenter_Left" }
+            .Select(name => DetectableCorrespondences().First(c => c.LandmarkName == name))
+            .ToList();
+        var keypoints = leftSideOnly.Concat(leftSideOnly)
+            .Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f))
+            .ToList();
+
+        var result = coordinator.TryCalibrateFromKeypoints("source-1", SportType.Basketball, keypoints);
+
+        Assert.False(result.Success);
+        Assert.Contains("cover", result.FailureReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TryCalibrateFromKeypoints_PointsClusteredAlongOneAxis_FailsAsDegenerate()
+    {
+        var coordinator = new CourtCalibrationCoordinator(new FileSourceProfileStore(_directory));
+        // Enough points to clear the count minimum, but all sharing the same court Y (a straight line) -
+        // mathematically degenerate for a homography regardless of image resolution/scale.
+        var keypoints = Enumerable.Range(0, 6)
+            .Select(i => new DetectedKeypoint($"Landmark{i}", ToImage(new CourtPoint(i * 3.0, 7.62)), 0.99f))
+            .ToList();
+
+        var result = coordinator.TryCalibrateFromKeypoints("source-1", SportType.Basketball, keypoints);
+
+        Assert.False(result.Success);
+        Assert.Contains("clustered", result.FailureReason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

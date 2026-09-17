@@ -9,6 +9,34 @@ namespace NBA.Vision;
 /// </summary>
 public sealed class CourtCalibrationCoordinator(ISourceProfileStore profileStore)
 {
+    /// <summary>
+    /// Stricter than <see cref="HomographyCalibrator.MinimumPoints"/> - manual calibration has a human
+    /// deliberately picking 4 well-spread points, but the automatic path just takes whatever the detector's
+    /// confidence threshold happened to clear on one frame, with no say over which points those are. Confirmed
+    /// live: a homography computed from exactly 4 confidently-detected points was mathematically valid but
+    /// projected real, spread-out tracked players into a tight cluster near mid-court - degenerate in practice,
+    /// not just in theory. Requiring a clear majority of a sport's detectable landmarks (9 of them for
+    /// basketball, per BasketballGeometry's KeypointIndex-assigned entries) makes a narrow/clustered subset far
+    /// less likely to pass, without demanding literally every landmark be confidently visible at once (which,
+    /// on a partial/panned camera view, may never happen). Lowered from 6 to 5 after live testing against
+    /// harder footage (a video-game capture with generally low keypoint confidence) showed even 6 rarely
+    /// clearing in practice - 5 still requires a clear majority of the 9, just with a little more headroom.
+    /// </summary>
+    public const int MinimumAutoCalibratePoints = 5;
+
+    /// <summary>
+    /// Minimum fraction of the court's real length/width the *court-space* landmarks (not the image-space
+    /// points) must span. Raising <see cref="MinimumAutoCalibratePoints"/> alone still let a homography fit
+    /// tightly to landmarks bunched in one half of the court (e.g. only left-side paint/free-throw/center-line
+    /// points) - a locally fine fit that extrapolates badly for anything outside that region, which is exactly
+    /// where real players stand. Confirmed live: 6+ non-collinear points still produced players bunched near
+    /// mid-court instead of spread across it. This is checked in real court meters (known exactly from the
+    /// sport's registered geometry), not image pixels, so it doesn't depend on the source's resolution/crop.
+    /// Lowered from 0.4 to 0.3 alongside <see cref="MinimumAutoCalibratePoints"/> for the same reason - still
+    /// meaningfully stricter than no coverage check at all.
+    /// </summary>
+    private const double MinimumCourtCoverageFraction = 0.3;
+
     /// <summary>Returns the calibration currently valid for this source, only if it was computed for <paramref name="currentSport"/>; null otherwise (none saved, or saved for a different sport).</summary>
     public CalibrationData? GetValidCalibration(string sourceKey, SportType currentSport)
     {
@@ -29,13 +57,38 @@ public sealed class CourtCalibrationCoordinator(ISourceProfileStore profileStore
         int stride)
     {
         var detected = detector.Detect(bgra8Pixels, width, height, stride);
-        if (detected.Count < HomographyCalibrator.MinimumPoints)
+        return TryCalibrateFromKeypoints(sourceKey, sport, detected);
+    }
+
+    /// <summary>
+    /// Same automatic-calibration rules as <see cref="TryAutoCalibrate"/>, but from keypoints the caller already
+    /// detected (e.g. reused from the raw-overlay's own detection pass) instead of running inference again.
+    /// </summary>
+    public CalibrationResult TryCalibrateFromKeypoints(string sourceKey, SportType sport, IReadOnlyList<DetectedKeypoint> keypoints)
+    {
+        if (keypoints.Count < MinimumAutoCalibratePoints)
         {
             return CalibrationResult.Fail(
-                $"Not enough court keypoints detected yet ({detected.Count}/{HomographyCalibrator.MinimumPoints} minimum) - calibration is not possible for this frame.");
+                $"Not enough court keypoints detected yet for automatic calibration ({keypoints.Count}/{MinimumAutoCalibratePoints} minimum) - calibration is not possible for this frame.");
         }
 
-        var correspondences = detected.Select(k => new LandmarkCorrespondence(k.Position, k.LandmarkName)).ToList();
+        if (IsTooClusteredToTrust(keypoints))
+        {
+            return CalibrationResult.Fail("Detected keypoints are clustered along one axis - too degenerate to calibrate reliably from this frame.");
+        }
+
+        if (!CourtGeometryRegistry.TryGet(sport, out var geometry))
+        {
+            return CalibrationResult.Fail($"Sport '{sport}' has no registered court geometry - calibration is unavailable for it.");
+        }
+
+        if (!CoversEnoughOfTheCourt(geometry, keypoints))
+        {
+            return CalibrationResult.Fail(
+                $"Detected keypoints only cover one region of the court (need landmarks spanning at least {MinimumCourtCoverageFraction:P0} of its length and width) - waiting for a frame with a wider spread before trusting a homography from it.");
+        }
+
+        var correspondences = keypoints.Select(k => new LandmarkCorrespondence(k.Position, k.LandmarkName)).ToList();
         var result = HomographyCalibrator.Compute(sport, correspondences);
         if (result.Success)
         {
@@ -43,6 +96,39 @@ public sealed class CourtCalibrationCoordinator(ISourceProfileStore profileStore
         }
 
         return result;
+    }
+
+    /// <summary>Cheap, scale-invariant degenerate-input guard: a homography needs points spread across both
+    /// image axes, not clustered along a single line - true regardless of the source's actual resolution.</summary>
+    private static bool IsTooClusteredToTrust(IReadOnlyList<DetectedKeypoint> keypoints)
+    {
+        var xs = keypoints.Select(k => k.Position.X).ToList();
+        var ys = keypoints.Select(k => k.Position.Y).ToList();
+        return (xs.Max() - xs.Min()) < 1.0 || (ys.Max() - ys.Min()) < 1.0;
+    }
+
+    /// <summary>Whether the *landmarks'* known real-world positions (not their detected image positions) span
+    /// enough of the court to make the resulting homography trustworthy outside the exact points it was fit
+    /// from. Unrecognized landmark names are ignored here - <see cref="HomographyCalibrator.Compute"/> is what
+    /// reports those as a real failure, once this check has already passed or failed on the recognized ones.</summary>
+    private static bool CoversEnoughOfTheCourt(CourtGeometryDefinition geometry, IReadOnlyList<DetectedKeypoint> keypoints)
+    {
+        var courtPoints = keypoints
+            .Select(k => geometry.FindLandmark(k.LandmarkName))
+            .Where(landmark => landmark is not null)
+            .Cast<CourtLandmark>()
+            .ToList();
+
+        if (courtPoints.Count == 0)
+        {
+            return false;
+        }
+
+        var spanX = courtPoints.Max(l => l.X) - courtPoints.Min(l => l.X);
+        var spanY = courtPoints.Max(l => l.Y) - courtPoints.Min(l => l.Y);
+
+        return spanX >= geometry.SurfaceLengthMeters * MinimumCourtCoverageFraction
+            && spanY >= geometry.SurfaceWidthMeters * MinimumCourtCoverageFraction;
     }
 
     /// <summary>Runs manual calibration from user-marked points. Unavailable (rather than attempted) when no supported sport is selected for this source.</summary>
