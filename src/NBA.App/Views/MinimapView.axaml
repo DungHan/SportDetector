@@ -1,17 +1,12 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:NBA.App.ViewModels"
-             xmlns:conv="using:NBA.App.Converters"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="260"
              x:Class="NBA.App.Views.MinimapView"
              x:DataType="vm:MinimapViewModel"
              IsVisible="{Binding IsVisible}">
-
-    <UserControl.Resources>
-        <conv:MarkerStyleToBrushConverter x:Key="MarkerStyleToBrushConverter" />
-    </UserControl.Resources>
 
     <Grid RowDefinitions="*,Auto" Background="#182018">
 
@@ -24,25 +19,12 @@
                        Foreground="#A0A0A0" HorizontalAlignment="Center" VerticalAlignment="Center"
                        IsVisible="{Binding !HasValidCalibration}" />
 
-            <Canvas Width="{Binding CourtWidthPixels}" Height="{Binding CourtHeightPixels}"
-                    IsVisible="{Binding HasValidCalibration}">
-                <ItemsControl ItemsSource="{Binding MarkerVisuals}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Canvas>
-                                <Ellipse Width="10" Height="10"
-                                         Fill="{Binding StyleKey, Converter={StaticResource MarkerStyleToBrushConverter}}"
-                                         Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
-                                         RenderTransform="translate(-5px,-5px)" />
-                                <TextBlock Text="{Binding Label}" FontSize="9" FontWeight="Bold" Foreground="White"
-                                           Width="24" TextAlignment="Center"
-                                           Canvas.Left="{Binding X}" Canvas.Top="{Binding Y}"
-                                           RenderTransform="translate(-12px,-5px)" />
-                            </Canvas>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </Canvas>
+            <!-- Markers are built by hand in MinimapView.axaml.cs, not via an ItemsControl+DataTemplate bound
+                 to MarkerVisuals - see RawOverlayView.axaml.cs's RebuildVisuals comment for why: that same
+                 pattern produced presenters with correct Bounds/IsVisible/Opacity that nevertheless never
+                 painted a pixel (an Avalonia 12.1.2 rendering bug), and this Canvas hit the identical failure. -->
+            <Canvas x:Name="MarkersCanvas" Width="{Binding CourtWidthPixels}" Height="{Binding CourtHeightPixels}"
+                    IsVisible="{Binding HasValidCalibration}" />
         </Grid>
 
         <!-- Reserved status/info panel region - placeholder text until Phase 4 (score/state) connects a real data source. -->
