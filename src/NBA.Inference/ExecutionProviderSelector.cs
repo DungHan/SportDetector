@@ -20,7 +20,10 @@ public static class ExecutionProviderSelector
             var options = NewSessionOptions();
             try
             {
-                options.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_USE_NONE);
+                // MLProgram is Apple's modern model format and is required to schedule work onto the Neural
+                // Engine; without it CoreML EP falls back to the legacy NeuralNetwork format, which is
+                // GPU/CPU-only.
+                options.AppendExecutionProvider_CoreML(CoreMLFlags.COREML_FLAG_CREATE_MLPROGRAM);
                 return new Selection(options, ExecutionProviderKind.CoreMl);
             }
             catch
