@@ -89,10 +89,16 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         Minimap = new MinimapViewModel();
         SportIndicator = new SportIndicatorViewModel();
         ManualCalibration = new ManualCalibrationViewModel(calibrationCoordinator);
+        KeypointSettings = new KeypointDetectionSettingsViewModel
+        {
+            KeypointConfidenceThreshold = keypointDetector.KeypointConfidenceThreshold,
+            DetectionConfidenceThreshold = keypointDetector.DetectionConfidenceThreshold,
+        };
         _reclassifyCommand = new RelayCommand(Reclassify, () => _currentSourceKey is not null);
 
         _frameSource.FrameArrived += OnFrameArrived;
         SourcePicker.PropertyChanged += OnSourcePickerPropertyChanged;
+        KeypointSettings.PropertyChanged += OnKeypointSettingsPropertyChanged;
 
         if (SourcePicker.SelectedSource is { } initialSource)
         {
@@ -120,6 +126,15 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     public SportIndicatorViewModel SportIndicator { get; }
 
     public ManualCalibrationViewModel ManualCalibration { get; }
+
+    /// <summary>Live court-keypoint detection thresholds, bound to sliders in the toolbar - pushed into <see cref="_keypointDetector"/> on every change so adjusting "鬆緊" takes effect on the next detected frame without restarting anything.</summary>
+    public KeypointDetectionSettingsViewModel KeypointSettings { get; }
+
+    private void OnKeypointSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        _keypointDetector.KeypointConfidenceThreshold = KeypointSettings.KeypointConfidenceThreshold;
+        _keypointDetector.DetectionConfidenceThreshold = KeypointSettings.DetectionConfidenceThreshold;
+    }
 
     private void OnSourcePickerPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -504,6 +519,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     {
         _frameSource.FrameArrived -= OnFrameArrived;
         SourcePicker.PropertyChanged -= OnSourcePickerPropertyChanged;
+        KeypointSettings.PropertyChanged -= OnKeypointSettingsPropertyChanged;
         await _frameSource.DisposeAsync();
     }
 }

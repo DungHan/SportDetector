@@ -34,6 +34,10 @@ public class MainWindowViewModelTests : IDisposable
     {
         public SportType Sport => SportType.Basketball;
 
+        public float KeypointConfidenceThreshold { get; set; } = 0.5f;
+
+        public float DetectionConfidenceThreshold { get; set; } = 0.5f;
+
         public IReadOnlyList<DetectedKeypoint> Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride) => keypoints;
     }
 

@@ -18,12 +18,14 @@ namespace NBA.Vision;
 public sealed class OnnxCourtKeypointDetector : ICourtKeypointDetector, IDisposable
 {
     private readonly CourtGeometryDefinition _geometry;
-    private readonly float _keypointConfidenceThreshold;
-    private readonly float _detectionConfidenceThreshold;
     private readonly int _inputSize;
     private readonly OnnxModelPipeline<(byte[] Pixels, int Width, int Height, int Stride), (float DetectionConfidence, float[] KeypointValues)> _pipeline;
 
     public SportType Sport => _geometry.Sport;
+
+    public float KeypointConfidenceThreshold { get; set; }
+
+    public float DetectionConfidenceThreshold { get; set; }
 
     public OnnxCourtKeypointDetector(
         string modelPath,
@@ -34,8 +36,8 @@ public sealed class OnnxCourtKeypointDetector : ICourtKeypointDetector, IDisposa
     {
         _geometry = geometry;
         _inputSize = inputSize;
-        _keypointConfidenceThreshold = keypointConfidenceThreshold;
-        _detectionConfidenceThreshold = detectionConfidenceThreshold;
+        KeypointConfidenceThreshold = keypointConfidenceThreshold;
+        DetectionConfidenceThreshold = detectionConfidenceThreshold;
 
         _pipeline = new OnnxModelPipeline<(byte[] Pixels, int Width, int Height, int Stride), (float, float[])>(
             modelPath,
@@ -75,7 +77,7 @@ public sealed class OnnxCourtKeypointDetector : ICourtKeypointDetector, IDisposa
     public IReadOnlyList<DetectedKeypoint> Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride)
     {
         var (detectionConfidence, keypointValues) = _pipeline.Run((bgra8Pixels.ToArray(), width, height, stride)).Output;
-        if (detectionConfidence < _detectionConfidenceThreshold)
+        if (detectionConfidence < DetectionConfidenceThreshold)
         {
             return [];
         }
@@ -95,7 +97,7 @@ public sealed class OnnxCourtKeypointDetector : ICourtKeypointDetector, IDisposa
             }
 
             var (pixelX, pixelY, confidence) = (keypointValues[offset], keypointValues[offset + 1], keypointValues[offset + 2]);
-            if (confidence < _keypointConfidenceThreshold)
+            if (confidence < KeypointConfidenceThreshold)
             {
                 continue;
             }

@@ -10,5 +10,9 @@ public sealed class NullCourtKeypointDetector(SportType sport) : ICourtKeypointD
 {
     public SportType Sport { get; } = sport;
 
+    public float KeypointConfidenceThreshold { get; set; } = 0.5f;
+
+    public float DetectionConfidenceThreshold { get; set; } = 0.5f;
+
     public IReadOnlyList<DetectedKeypoint> Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride) => [];
 }

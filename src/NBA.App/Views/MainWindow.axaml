@@ -46,6 +46,16 @@
                       IsVisible="{Binding ManualCalibration.IsActive}"
                       Width="220" />
             <TextBlock Text="{Binding ManualCalibration.ResultMessage}" Foreground="#FFB040" VerticalAlignment="Center" />
+
+            <TextBlock Text="Keypoint threshold" VerticalAlignment="Center" Margin="16,0,0,0" />
+            <Slider Minimum="0" Maximum="1" Width="120" Value="{Binding KeypointSettings.KeypointConfidenceThreshold}"
+                    ToolTip.Tip="Per-keypoint confidence floor - lower to keep looser/noisier keypoints, raise to keep only confident ones." />
+            <TextBlock Text="{Binding KeypointSettings.KeypointConfidenceThreshold, StringFormat={}{0:P0}}" VerticalAlignment="Center" Width="40" />
+
+            <TextBlock Text="Detection threshold" VerticalAlignment="Center" Margin="8,0,0,0" />
+            <Slider Minimum="0" Maximum="1" Width="120" Value="{Binding KeypointSettings.DetectionConfidenceThreshold}"
+                    ToolTip.Tip="Whole-court 'is a court present' confidence floor - lower to keep detecting on weaker frames, raise to suppress false positives." />
+            <TextBlock Text="{Binding KeypointSettings.DetectionConfidenceThreshold, StringFormat={}{0:P0}}" VerticalAlignment="Center" Width="40" />
         </WrapPanel>
 
         <!-- Default layout: raw overlay view docked above the minimap view (dual-view-shell spec's "Default stacked layout"). -->
