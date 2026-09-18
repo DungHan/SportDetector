@@ -9,7 +9,7 @@ public class ModelsConfigTests
     {
         var config = ModelsConfig.LoadFromJsonOrDefault(Path.Combine(Path.GetTempPath(), $"models-{Guid.NewGuid():N}.json"));
 
-        Assert.Equal("court-keypoints.basketball.onnx", config.CourtKeypoints.ModelPath);
+        Assert.Equal("basketball_nba_court-keypoints_1280_yolov8s-pose.onnx", config.CourtKeypoints.ModelPath);
         Assert.Equal(1280, config.CourtKeypoints.InputSize);
         Assert.Equal(PlayerDetectionConfig.DefaultClassNames, config.PlayerDetection.ClassNames);
     }
@@ -27,9 +27,9 @@ public class ModelsConfigTests
             var config = ModelsConfig.LoadFromJsonOrDefault(path);
 
             Assert.Equal(0.35f, config.CourtKeypoints.KeypointConfidenceThreshold);
-            Assert.Equal("court-keypoints.basketball.onnx", config.CourtKeypoints.ModelPath);
+            Assert.Equal("basketball_nba_court-keypoints_1280_yolov8s-pose.onnx", config.CourtKeypoints.ModelPath);
             Assert.Equal(1280, config.CourtKeypoints.InputSize);
-            Assert.Equal("sport-classifier.onnx", config.SportClassifier.ModelPath);
+            Assert.Equal("sport-classifier_224_clip-vitb32.onnx", config.SportClassifier.ModelPath);
             Assert.Equal("jersey-number.onnx", config.JerseyNumber.ModelPath);
         }
         finally

@@ -66,10 +66,10 @@ public partial class App : Application
                 ? new OnnxCourtKeypointDetector(
                     keypointModelPath,
                     BasketballGeometryDefinition(),
-                    // Values come from models/models.json (see ModelsConfig) - the active model (models/README.md's
-                    // "lweda retrain") was re-exported at 1280x1280, so the library's 640 default would
-                    // letterbox/resize to the wrong size against this file, scrambling every decoded keypoint's
-                    // pixel position.
+                    // Values come from models/models.json (see ModelsConfig) - the active model
+                    // (models/README.md's "basketball_nba_court-keypoints_1280_yolov8s-pose.onnx" section) is a
+                    // 1280x1280 export, so the library's 640 default would letterbox/resize to the wrong size
+                    // against this file, scrambling every decoded keypoint's pixel position.
                     inputSize: modelsConfig.CourtKeypoints.InputSize,
                     keypointConfidenceThreshold: modelsConfig.CourtKeypoints.KeypointConfidenceThreshold,
                     detectionConfidenceThreshold: modelsConfig.CourtKeypoints.DetectionConfidenceThreshold)
@@ -81,13 +81,14 @@ public partial class App : Application
                 ? new OnnxMultiClassObjectDetector(
                     playerDetectionModelPath,
                     // Values come from models/models.json (see ModelsConfig), defaulting to this model's own
-                    // embedded class-name metadata (models/README.md's "player-detection.onnx" section, verified
-                    // via the file's own onnx.metadata_props `names` key) - the order here must match that
-                    // metadata's index order exactly, since classIndex 4+i's channel is decoded positionally,
-                    // not by name.
+                    // embedded class-name metadata (models/README.md's
+                    // "basketball_nba_player-detection_1280_yolov8m.onnx" section, verified via the file's own
+                    // onnx.metadata_props `names` key) - the order here must match that metadata's index order
+                    // exactly, since classIndex 4+i's channel is decoded positionally, not by name.
                     classNames: modelsConfig.PlayerDetection.ClassNames,
-                    // Defaults to this specific model's export size (models/README.md's "player-detection.onnx"
-                    // section: verified imgsz=[1280,1280] from the file's own embedded metadata) - the library
+                    // Defaults to this specific model's export size (models/README.md's
+                    // "basketball_nba_player-detection_1280_yolov8m.onnx" section: verified imgsz=[1280,1280]
+                    // from the file's own embedded metadata) - the library
                     // default of 640 assumes a stock yolov8n-shaped export and would letterbox/resize to the
                     // wrong size against this model, scrambling every box's decoded coordinates.
                     inputSize: modelsConfig.PlayerDetection.InputSize,

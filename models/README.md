@@ -19,7 +19,7 @@ Exported ONNX model files consumed by `NBA.Inference`. Models are **not trained 
 
 - `sport-classifier_224_clip-vitb32.onnx` — the sport classification model consumed by `vision/sport-classification` (its whole job is to work across sports, so no `<sport>`/`<scene>` segment; `224` is the CLIP vision encoder's input size, `clip-vitb32` its architecture).
 
-**Current status**: the three files actually in this directory today (`court-keypoints.basketball.onnx`, `player-detection.onnx`, `sport-classifier.onnx`) still use the old `<capability>.<sport>.onnx` scheme — they haven't been renamed yet because renaming implies asserting facts (exact scene, exact resolution/architecture) that should be verified against the real file at rename time, not guessed retroactively. Rename each file (and update its entry in `models.json` below) the next time it's actually replaced by a new export, rather than as a one-off bulk rename.
+**Current status**: all three files that exist today have been renamed to this scheme — `basketball_nba_court-keypoints_1280_yolov8s-pose.onnx`, `basketball_nba_player-detection_1280_yolov8m.onnx`, `sport-classifier_224_clip-vitb32.onnx` — each renamed at the point it was actually replaced by a new export (per-file details, including which facts were verified against the real file vs. supplied by whoever trained it, are in that file's own section below), plus `models.json` and `ModelsConfig.cs`'s defaults updated to match. `jersey-number.onnx` has no file yet, so its eventual name is not asserted in advance.
 
 ## `models.json`
 
@@ -29,7 +29,7 @@ A subset of `courtKeypoints`'s two thresholds (`keypointConfidenceThreshold`, `d
 
 A model file is not required for the application to run: every model-backed capability has a documented degraded/manual path when its model file is absent (e.g., manual court calibration, "unknown" sport classification) — see the relevant `specs/*/spec.md` for the exact fallback behavior.
 
-## `sport-classifier.onnx`
+## `sport-classifier_224_clip-vitb32.onnx`
 
 Currently a CLIP ViT-B/32 **vision-encoder-only** export (via Hugging Face `optimum`), consumed by `ClipZeroShotSportClassifier` (`src/NBA.Vision/ClipZeroShotSportClassifier.cs`) per design.md's "Sport classification: CLIP/SigLIP zero-shot" decision — not a fine-tuned classifier. Verified signature (`python -c "import onnx; onnx.load(...)"`, not yet run through `ClipZeroShotSportClassifier` against a real captured frame):
 
@@ -42,13 +42,21 @@ The corresponding **text** encoder (`text_model.onnx`, ~250MB) is deliberately *
 
 **Not yet done**: the harness above used random placeholder prompt vectors (proves the plumbing works, proves nothing about classification *accuracy*) — no real prompt-embeddings JSON has been generated from the paired text encoder yet (needs a CLIP tokenizer, which `text_model.onnx` alone doesn't include — see `tools/clip-text-encoder/README.md`), so `ClipZeroShotSportClassifier` is not yet wired into `NBA.App`'s composition root, and real classification accuracy against actual captured frames is unverified.
 
-## `court-keypoints.basketball.onnx`
+## `basketball_nba_court-keypoints_1280_yolov8s-pose.onnx`
 
 A real trained model now exists (previously this capability had no model at all — see design.md's risk entry — and `App.axaml.cs` fell back entirely to `NullCourtKeypointDetector`). Trained locally with Ultralytics, following design.md's out-of-repo Python/Ultralytics training convention.
 
-**Active model is currently the 33-keypoint "lweda retrain" below**, promoted 2026-09-16, superseding the "previous version" (`samet-mmrat` dataset) that was active before it — that older file is kept as `court-keypoints.basketball.onnx.bak-33kpt` for context on the `BasketballGeometry.cs` mapping rationale. A separate 34-keypoint retrain was also attempted 2026-09-16 (see "Rejected 34-keypoint attempt" below) but failed end-to-end verification and was never promoted.
+**Active model is currently the YOLOv8s-pose 1280×1280 export below**, promoted 2026-09-17, superseding the 33-keypoint "lweda retrain" (YOLOv8n-pose, 640×640) that was active before it — that older file is kept as `basketball_nba_court-keypoints_640_yolov8n-pose.onnx.bak-lweda`. That in turn had superseded the "previous version" (`samet-mmrat` dataset) further below, kept as `court-keypoints.basketball.onnx.bak-33kpt` for context on the `BasketballGeometry.cs` mapping rationale. A separate 34-keypoint retrain was also attempted 2026-09-16 (see "Rejected 34-keypoint attempt" below) but failed end-to-end verification and was never promoted.
 
-**Active — 33-keypoint "lweda retrain"** (2026-09-16, `yolov8n-pose.pt` base, promoted to `court-keypoints.basketball.onnx`):
+**Active — YOLOv8s-pose, 1280×1280** (2026-09-17, promoted to `basketball_nba_court-keypoints_1280_yolov8s-pose.onnx`):
+
+- **Data**: scene confirmed as `nba` (real broadcast footage) by whoever trained this export; embedded metadata only names the local path `datasets/basketball-court-detection/data.yaml`, so the exact Roboflow source/version, epoch count, and validation mAP were **not** independently recorded here — same 33-keypoint schema as the prior "lweda retrain" (`kpt_shape: [33, 3]`).
+- **Export**: Ultralytics `yolo export format=onnx` (embedded ONNX metadata: `Ultralytics YOLOv8s-pose model trained on datasets/basketball-court-detection/data.yaml`, Ultralytics version `8.4.154`, exported `2026-09-17T03:00:58+00:00`, `task=pose`, `end2end=False`) — note the `s` (small) backbone, a step up from the previous `n` (nano) exports.
+- **Verified signature** (inspected the real exported `onnx.load(...).graph`, not assumed): input `images` `[1, 3, 1280, 1280]`; output `output0` `[1, 104, 33600]` — same 104-channel layout as every prior export (4 box + 1 class-confidence + 33×3 keypoint channels), just more anchors (33600 vs. 8400) from the larger 1280 input at the same stride-8/16/32 grids — `OnnxCourtKeypointDetector` needs no changes, and `models.json`'s `courtKeypoints.inputSize` was already set to `1280` (it had been pre-updated for this export in `bf76a6f`/`02f641b`, ahead of the file actually landing here).
+- **Keypoint mapping carries over assumed-unchanged**: same 33-point schema as the "lweda retrain" below, so `BasketballGeometry.cs`'s existing mapping is assumed to still apply — **not independently re-verified** against this export's own images (same caveat as every prior version here).
+- **Not yet done**: no real captured frame has been run through this file end-to-end via the real C# pipeline; training details (exact dataset source/version, epochs, validation mAP) were not recorded when this file was promoted — fill in here if/when available; per-keypoint confidence behavior against real broadcast frames is unverified.
+
+**Previous — 33-keypoint "lweda retrain"** (2026-09-16, `yolov8n-pose.pt` base, kept as `basketball_nba_court-keypoints_640_yolov8n-pose.onnx.bak-lweda`):
 
 - **Data**: Roboflow Universe's [`basketball-court-detection-2-lweda`](https://universe.roboflow.com/dh-yang/basketball-court-detection-2-lweda/dataset/1) (workspace `dh-yang`), CC BY 4.0, single class `court`, 33 keypoints/image (`kpt_shape: [33, 3]`) — same 33-point schema as the previous active model below, from a different Roboflow project under the same annotation convention.
 - **Export**: Ultralytics `yolo export format=onnx opset=13` equivalent (embedded ONNX metadata: `Ultralytics YOLOv8n-pose model trained on data.yaml`, Ultralytics version `8.4.153`, exported `2026-09-16T23:43:08+08:00`, `task=pose`, `end2end=False`).
@@ -81,11 +89,11 @@ A real trained model now exists (previously this capability had no model at all 
 
 **Not yet done**: no real captured frame has been run through the *new* (34-keypoint) model end-to-end in the app; the `BasketballGeometry.cs` landmark mapping is unverified against this dataset (see above); the confidence thresholds (`keypointConfidenceThreshold`/`detectionConfidenceThreshold`, both default `0.5`) are placeholders, not empirically calibrated.
 
-This file is gitignored (like `sport-classifier.onnx`) — regenerate it by re-running the training steps above, or obtain a copy separately.
+Every file in this section is gitignored (like `sport-classifier_224_clip-vitb32.onnx`) — regenerate by re-running the relevant training steps above, or obtain a copy separately.
 
-## `player-detection.onnx`
+## `basketball_nba_player-detection_1280_yolov8m.onnx`
 
-A real basketball-specific multi-class model now exists (previously this directory only had `yolov8n.onnx`'s generic COCO-pretrained shape to verify against — see "Previous verification" below). Trained/exported outside this repo from a Roboflow `basketball-players-fy4c2`-style labeled dataset (`Ball`, `Hoop`, `Period`, `Player`, `Ref`, `Shot Clock`, `Team Name`, `Team Points`, `Time Remaining`), then exported via `yolo export format=onnx opset=12`.
+A real basketball-specific multi-class model now exists (previously this directory only had `yolov8n.onnx`'s generic COCO-pretrained shape to verify against — see "Previous verification" below). Trained/exported outside this repo from a Roboflow `basketball-players-fy4c2`-style labeled dataset (`Ball`, `Hoop`, `Period`, `Player`, `Ref`, `Shot Clock`, `Team Name`, `Team Points`, `Time Remaining`), then exported via `yolo export format=onnx opset=12`. Scene is `nba` (real broadcast footage, matching the class list above — these are broadcast overlay elements, not generic objects) and architecture is `yolov8m` — both per whoever trained this export; the embedded metadata's `description` field only says "Ultralytics best model", with no explicit `n`/`s`/`m` marker, so the architecture size is **not independently confirmed from the file itself**, unlike the other facts in this section.
 
 **Verified signature** (inspected the real file's embedded ONNX metadata directly — `onnx.metadata_props`/the raw protobuf bytes — not assumed from any UI display order or guessed):
 
@@ -96,7 +104,7 @@ A real basketball-specific multi-class model now exists (previously this directo
 
 **Previous verification** (kept for context — describes `yolov8n.onnx`, the stock COCO-pretrained detector this repo verified the raw-export-shape assumption against before a basketball-specific model was available): input `images` `[1, 3, 640, 640]`; output `output0` `[1, 84, 8400]` (4 box channels + 80 COCO per-class scores, COCO class 0 = "person"), no NMS baked in. `OnnxMultiClassObjectDetector` always applies its own non-max suppression in postprocessing, independently per class, since this raw export shape has none — true for both this and the model above.
 
-This file is gitignored (like `sport-classifier.onnx`) — regenerate/re-obtain it separately; it is not checked into the repo.
+This file is gitignored (like `sport-classifier_224_clip-vitb32.onnx`) — regenerate/re-obtain it separately; it is not checked into the repo.
 
 ## `jersey-number.onnx`
 
@@ -107,4 +115,4 @@ Expected signature, consumed by `OnnxJerseyNumberRecognizer` (`src/NBA.JerseyOcr
 - Input: `input`, shape `[1, 3, inputSize, inputSize]` (NCHW, RGB, values scaled to `[0, 1]`) — `inputSize` defaults to 64 (`OnnxJerseyNumberRecognizer`'s constructor parameter), fed a single tracked player's cropped bounding box (not the full frame) resized via `ImagePreprocessing.ToNchwTensor`'s crop-rectangle overload.
 - Output: `output0`, shape `[1, 101]` — one logit per class: classes `0`-`99` are the jersey number itself (index = the number), class `100` is "no number" (occluded, player facing away, or no jersey visible). No softmax baked in; `OnnxJerseyNumberRecognizer` takes the argmax class and computes its softmax-equivalent confidence itself, reporting "unrecognized" (`Number: null`) whenever the argmax is class 100 or its confidence falls below the configurable threshold (default 0.5).
 
-No model file is shipped in this change (same placeholder posture as `court-keypoints.basketball.onnx` and `player-detection.onnx` above) — training a real jersey-number classifier is out of scope for this change.
+No model file is shipped in this change (same placeholder posture as `basketball_nba_court-keypoints_1280_yolov8s-pose.onnx` and `basketball_nba_player-detection_1280_yolov8m.onnx` above) — training a real jersey-number classifier is out of scope for this change.

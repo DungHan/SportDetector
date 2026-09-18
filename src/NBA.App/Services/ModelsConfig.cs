@@ -4,14 +4,14 @@ namespace NBA.App.Services;
 
 public sealed record SportClassifierConfig
 {
-    public string ModelPath { get; init; } = "sport-classifier.onnx";
+    public string ModelPath { get; init; } = "sport-classifier_224_clip-vitb32.onnx";
     public string PromptsPath { get; init; } = "sport-classifier-prompts.clip.json";
     public int InputSize { get; init; } = 224;
 }
 
 public sealed record CourtKeypointsConfig
 {
-    public string ModelPath { get; init; } = "court-keypoints.basketball.onnx";
+    public string ModelPath { get; init; } = "basketball_nba_court-keypoints_1280_yolov8s-pose.onnx";
     public int InputSize { get; init; } = 1280;
     public float KeypointConfidenceThreshold { get; init; } = 0.5f;
     public float DetectionConfidenceThreshold { get; init; } = 0.5f;
@@ -22,7 +22,7 @@ public sealed record PlayerDetectionConfig
     public static readonly IReadOnlyList<string> DefaultClassNames =
         ["Ball", "Hoop", "Period", "Player", "Ref", "Shot Clock", "Team Name", "Team Points", "Time Remaining"];
 
-    public string ModelPath { get; init; } = "player-detection.onnx";
+    public string ModelPath { get; init; } = "basketball_nba_player-detection_1280_yolov8m.onnx";
     public int InputSize { get; init; } = 1280;
     public IReadOnlyList<string> ClassNames { get; init; } = DefaultClassNames;
     public int PlayerClassId { get; init; } = 3;
