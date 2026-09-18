@@ -56,6 +56,10 @@
             <Slider Minimum="0" Maximum="1" Width="120" Value="{Binding KeypointSettings.DetectionConfidenceThreshold}"
                     ToolTip.Tip="Whole-court 'is a court present' confidence floor - lower to keep detecting on weaker frames, raise to suppress false positives." />
             <TextBlock Text="{Binding KeypointSettings.DetectionConfidenceThreshold, StringFormat={}{0:P0}}" VerticalAlignment="Center" Width="40" />
+
+            <CheckBox Content="Require keypoints for player/ball detection"
+                      IsChecked="{Binding KeypointSettings.RequireKeypointsBeforeObjectDetection}"
+                      ToolTip.Tip="When on, skips player/ball detection, jersey OCR, and scoreboard OCR on any frame where no court keypoints are currently detected. Off by default since keypoint detection is still less reliable than sport classification - turn on only once it's stable for your sources." />
         </WrapPanel>
 
         <!-- Default layout: raw overlay view docked above the minimap view (dual-view-shell spec's "Default stacked layout"). -->

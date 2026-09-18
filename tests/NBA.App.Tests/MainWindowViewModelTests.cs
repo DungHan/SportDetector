@@ -420,6 +420,66 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task FrameArrived_WithRequireKeypointsEnabled_AndNoKeypointsDetected_SkipsPlayerDetection()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var playerDetector = new StubMultiClassObjectDetector();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store),
+            new StubKeypointDetector([]), // no court keypoints detected this frame
+            playerDetector,
+            new ByteTrackPlayerTracker(),
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
+            detectionIntervalFrames: 1);
+        viewModel.KeypointSettings.RequireKeypointsBeforeObjectDetection = true;
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(0, playerDetector.CallCount);
+        Assert.Empty(viewModel.RawOverlay.Annotations);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_WithRequireKeypointsEnabled_AndKeypointsDetected_StillRunsPlayerDetection()
+    {
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var playerDetector = new StubMultiClassObjectDetector();
+        var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store),
+            new StubKeypointDetector(keypoints),
+            playerDetector,
+            new ByteTrackPlayerTracker(),
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
+            detectionIntervalFrames: 1);
+        viewModel.KeypointSettings.RequireKeypointsBeforeObjectDetection = true;
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(1, playerDetector.CallCount);
+    }
+
+    [AvaloniaFact]
     public async Task FrameArrived_WithCadenceOfOne_CallsPlayerDetectorOnEveryFrame()
     {
         var frameSource = new FakeFrameSource();

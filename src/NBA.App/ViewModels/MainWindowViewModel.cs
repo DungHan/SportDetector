@@ -301,10 +301,69 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             }
         }
 
+        // Only a Confident sport has a registered geometry/keypoint detector - RecognizedButUnsupported never
+        // runs keypoint detection at all, regardless of the settings below.
+        var sport = SportIndicator.Current?.Sport;
+        var isConfidentSport = sport is not null && SportIndicator.Current!.Status == SportClassificationStatus.Confident;
+
+        // Keypoint detection runs here, ahead of player detection, so RequireKeypointsBeforeObjectDetection
+        // below can see this frame's freshest result rather than one that's a whole detection pass stale.
+        // Throttled to ~6.7Hz (every 150ms) via a wall-clock timer, a separate cadence from player detection's
+        // frame-count-based one below - the court's keypoints only move when the camera pans/zooms/cuts, so
+        // re-running the ONNX inference on every single frame is wasted work. Between checks, the last
+        // detected keypoints are reused so the gate below and the overlay/minimap don't flicker on skipped
+        // frames.
+        if (isConfidentSport && _currentSourceKey is { } sourceKeyForKeypoints
+            && frame.Timestamp - _lastKeypointCheckAt >= KeypointDetectionInterval)
+        {
+            _lastKeypointCheckAt = frame.Timestamp;
+            try
+            {
+                _lastKeypoints = playbackCrop is { } crop
+                    ? _keypointDetector.Detect(crop.Pixels, crop.Width, crop.Height, crop.Stride)
+                        .Select(k => OffsetToFullFrame(k, crop.Left, crop.Top))
+                        .ToList()
+                    : _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[keypoint-detect] detection failed for this frame, treating as none: {ex.Message}");
+                _lastKeypoints = [];
+            }
+
+            // Try to (re)calibrate from this same detection pass rather than running the detector again -
+            // only while no calibration is persisted yet for this source/sport; once one succeeds,
+            // GetValidCalibration below finds it and this is skipped on later checks.
+            if (_calibrationCoordinator.GetValidCalibration(sourceKeyForKeypoints, sport!.Value) is null)
+            {
+                var calibrationAttempt = _calibrationCoordinator.TryCalibrateFromKeypoints(sourceKeyForKeypoints, sport.Value, _lastKeypoints);
+                if (!calibrationAttempt.Success)
+                {
+                    Console.WriteLine($"[auto-calibrate] {calibrationAttempt.FailureReason}");
+                }
+            }
+        }
+
+        // Opt-in (off by default - see KeypointDetectionSettingsViewModel.RequireKeypointsBeforeObjectDetection):
+        // when enabled, a Confident-sport frame with no currently-detected keypoints skips player/ball
+        // detection, jersey OCR, and scoreboard OCR below entirely, since there's no court to place any of
+        // that on. Never gates a RecognizedButUnsupported/Unknown source - those never have keypoints to
+        // begin with, and blocking them here would just be a second, redundant version of the classification
+        // gate above.
+        if (isConfidentSport && KeypointSettings.RequireKeypointsBeforeObjectDetection && _lastKeypoints.Count == 0)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                RawOverlay.CurrentFrame = bitmap;
+                RawOverlay.SetAnnotations([]);
+            });
+            return;
+        }
+
         // Player detection is independent of *calibration* state (vision/player-detection spec) - it doesn't
-        // need a court projection to run - but it is gated behind sport classification by the block above.
-        // Among frames that do reach here, it only runs every `_detectionIntervalFrames`th captured frame -
-        // it's the most expensive step in this pipeline,
+        // need a court projection to run - but it is gated behind sport classification (and optionally
+        // keypoint detection) by the blocks above. Among frames that do reach here, it only runs every
+        // `_detectionIntervalFrames`th captured frame - it's the most expensive step in this pipeline,
         // and the tracker's own motion model (PredictOnly, below) can carry a track's position between real
         // detections. Guarded because an inference failure on one frame (e.g. an unsupported ONNX op on this
         // machine's runtime build) must not take down the capture loop that calls this handler - see
@@ -447,11 +506,11 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             }
         }
 
-        // Classification itself already happened in the gate above (which guarantees a non-Unknown result by
-        // this point) - this only distinguishes Confident from RecognizedButUnsupported, since the latter still
-        // has no registered geometry to run keypoint detection/calibration/minimap projection against.
-        var sport = SportIndicator.Current?.Sport;
-        if (sport is null || SportIndicator.Current!.Status != SportClassificationStatus.Confident)
+        // isConfidentSport was already established above (before keypoint detection ran) - RecognizedButUnsupported
+        // has no registered geometry to project keypoints/players onto, so it stops here with just the raw
+        // overlay + player/other annotations, same as before. The redundant `sport is null` check (isConfidentSport
+        // already implies it) is what lets the compiler narrow `sport` to non-null for the rest of the method.
+        if (sport is null || !isConfidentSport)
         {
             Dispatcher.UIThread.Post(() =>
             {
@@ -461,41 +520,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             return;
         }
 
-        // Keypoint detection is throttled to ~6.7Hz (every 150ms) via a wall-clock timer, a separate cadence
-        // mechanism from player detection's frame-count-based one above - the court's keypoints only move when
-        // the camera pans/zooms/cuts, so re-running the ONNX inference on every single frame is wasted work.
-        // Between checks, the last detected keypoints are reused so the overlay/minimap don't blank out on
-        // skipped frames.
-        if (frame.Timestamp - _lastKeypointCheckAt >= KeypointDetectionInterval)
-        {
-            _lastKeypointCheckAt = frame.Timestamp;
-            try
-            {
-                _lastKeypoints = playbackCrop is { } crop
-                    ? _keypointDetector.Detect(crop.Pixels, crop.Width, crop.Height, crop.Stride)
-                        .Select(k => OffsetToFullFrame(k, crop.Left, crop.Top))
-                        .ToList()
-                    : _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[keypoint-detect] detection failed for this frame, treating as none: {ex.Message}");
-                _lastKeypoints = [];
-            }
-
-            // Try to (re)calibrate from this same detection pass rather than running the detector again -
-            // only while no calibration is persisted yet for this source/sport; once one succeeds,
-            // GetValidCalibration below finds it and this is skipped on later checks.
-            if (_calibrationCoordinator.GetValidCalibration(sourceKey, sport.Value) is null)
-            {
-                var calibrationAttempt = _calibrationCoordinator.TryCalibrateFromKeypoints(sourceKey, sport.Value, _lastKeypoints);
-                if (!calibrationAttempt.Success)
-                {
-                    Console.WriteLine($"[auto-calibrate] {calibrationAttempt.FailureReason}");
-                }
-            }
-        }
-
+        // Keypoint detection itself already ran in the throttled block above, ahead of player detection -
+        // this just renders whatever _lastKeypoints currently holds.
         var keypoints = _lastKeypoints;
         var keypointAnnotations = keypoints
             .Select(k => OverlayAnnotation.ForPoint(k.Position.X, k.Position.Y, k.LandmarkName, "keypoint"))
