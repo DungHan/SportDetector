@@ -160,7 +160,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA, SourceB]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             new NullMultiClassObjectDetector(),
@@ -185,7 +185,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             new NullMultiClassObjectDetector(),
@@ -428,7 +428,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             playerDetector,
@@ -464,7 +464,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             detector,
@@ -491,7 +491,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             new StubMultiClassObjectDetector(),
@@ -531,7 +531,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             playerDetector,
@@ -577,7 +577,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             new NullMultiClassObjectDetector(),
@@ -617,7 +617,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             playerDetector,
@@ -650,7 +650,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             new StubMultiClassObjectDetector(),
@@ -671,17 +671,17 @@ public class MainWindowViewModelTests : IDisposable
     [AvaloniaFact]
     public async Task FrameArrived_MapsTrackedPlayerToBoxAnnotationWithTrackIdLabel()
     {
-        // Deliberately uses NullSportClassifier/NullCourtKeypointDetector so this exercises player
-        // tracking's sport-independent path (tracking/player-tracking spec) without depending on calibration
-        // being reused. Rendered as the track's full box, labeled with its track ID - not a
-        // confidence-labeled foot-point.
+        // Uses NullCourtKeypointDetector and no persisted calibration, so this exercises player tracking's
+        // calibration-independent path (tracking/player-tracking spec) - it still needs a Confident sport
+        // classification to get past the gate in OnFrameArrived, but nothing beyond that. Rendered as the
+        // track's full box, labeled with its track ID - not a confidence-labeled foot-point.
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
         var playerTracker = new StubPlayerTracker { Tracks = [new TrackedPlayer(7, 1, 2, 3, 4, 0.876f)] };
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             new StubMultiClassObjectDetector(),
@@ -718,7 +718,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             detector,
@@ -763,7 +763,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             detector,
@@ -802,7 +802,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             new StubMultiClassObjectDetector(),
@@ -834,7 +834,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA, SourceB]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             new StubMultiClassObjectDetector(),
@@ -863,7 +863,7 @@ public class MainWindowViewModelTests : IDisposable
         await using var viewModel = new MainWindowViewModel(
             frameSource,
             new FakeCaptureSourceEnumerator([SourceA, SourceB]),
-            new SportClassificationCoordinator(new NullSportClassifier(), store),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
             new CourtCalibrationCoordinator(store),
             new NullCourtKeypointDetector(SportType.Basketball),
             playerDetector,

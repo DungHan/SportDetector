@@ -36,6 +36,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
 
     private static readonly TimeSpan KeypointDetectionInterval = TimeSpan.FromMilliseconds(150);
 
+    // Sport classification is retried at this cadence (not per-frame - it's a real inference call) for as long
+    // as it keeps coming back Unknown, e.g. because the opening frames of a source don't show the court yet.
+    private static readonly TimeSpan SportClassificationRetryInterval = TimeSpan.FromMilliseconds(500);
+
     // The `vision/on-court-object-detection` classes whose union bounding box sources the scoreboard OCR crop
     // region (ocr/scoreboard-recognition spec) - deliberately excludes Ball/Hoop/Player/Ref, which aren't part
     // of the scoreboard graphic.
@@ -45,10 +49,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     ];
 
     private string? _currentSourceKey;
-    private bool _classifiedForCurrentSource;
     private NormalizedRect? _currentPlaybackRegion;
     private DateTimeOffset _lastScoreboardCheckAt;
     private DateTimeOffset _lastKeypointCheckAt;
+    private DateTimeOffset _lastSportClassificationCheckAt;
     private IReadOnlyList<DetectedKeypoint> _lastKeypoints = [];
     private IReadOnlyList<OnCourtObjectDetection> _lastOtherDetections = [];
     private NormalizedRect? _lastScoreboardObjectRegion;
@@ -149,7 +153,12 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         await _frameSource.StartAsync(source);
 
         _currentSourceKey = SourceIdentity.DeriveKey(source);
-        _classifiedForCurrentSource = false;
+
+        // Null (not the previous source's classification) so the retry gate in OnFrameArrived recognizes this
+        // as needing classification, and default so it's attempted on this source's very first frame rather
+        // than waiting out whatever fraction of the retry interval happened to remain from the old source.
+        SportIndicator.Current = null;
+        _lastSportClassificationCheckAt = default;
 
         // Reuse a region detected for this exact source in an earlier session (mirrors calibration/scoreboard
         // reuse below); null just means "not detected yet" - accumulation resumes on this source's own frames.
@@ -261,8 +270,41 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         // needs to know cropping happened.
         var playbackCrop = CropToPlaybackRegion(frame);
 
-        // Player detection is independent of sport/calibration state (vision/player-detection spec), but only
-        // runs every `_detectionIntervalFrames`th captured frame - it's the most expensive step in this pipeline,
+        // Sport classification gates everything below it - player detection, jersey OCR, scoreboard OCR, and
+        // keypoint detection all only make sense once a sport is known, so none of them are worth starting
+        // while the source is still Unknown (e.g. the opening frames are a crowd shot, replay, or commentator
+        // cut-in rather than the court itself). Retried on this throttled wall-clock cadence rather than every
+        // frame, since classification is a real inference call; an Unknown result is never cached as final
+        // (SportClassificationCoordinator.ClassifyAndCache), so this naturally keeps retrying on later frames
+        // instead of getting stuck on a bad first attempt.
+        if (_currentSourceKey is { } sourceKeyForClassification)
+        {
+            var needsClassification = SportIndicator.Current is not { Status: not SportClassificationStatus.Unknown };
+            if (needsClassification && frame.Timestamp - _lastSportClassificationCheckAt >= SportClassificationRetryInterval)
+            {
+                _lastSportClassificationCheckAt = frame.Timestamp;
+                var classification = _sportCoordinator.ClassifyOrGetCached(
+                    sourceKeyForClassification,
+                    () => new SportClassificationCoordinator.FrameSnapshot(frame.Pixels.ToArray(), frame.Width, frame.Height, frame.Stride));
+                ApplyClassification(sourceKeyForClassification, classification);
+                needsClassification = classification.Status == SportClassificationStatus.Unknown;
+            }
+
+            if (needsClassification)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    RawOverlay.CurrentFrame = bitmap;
+                    RawOverlay.SetAnnotations([]);
+                });
+                return;
+            }
+        }
+
+        // Player detection is independent of *calibration* state (vision/player-detection spec) - it doesn't
+        // need a court projection to run - but it is gated behind sport classification by the block above.
+        // Among frames that do reach here, it only runs every `_detectionIntervalFrames`th captured frame -
+        // it's the most expensive step in this pipeline,
         // and the tracker's own motion model (PredictOnly, below) can carry a track's position between real
         // detections. Guarded because an inference failure on one frame (e.g. an unsupported ONNX op on this
         // machine's runtime build) must not take down the capture loop that calls this handler - see
@@ -405,20 +447,9 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             }
         }
 
-        if (!_classifiedForCurrentSource)
-        {
-            var classification = _sportCoordinator.ClassifyOrGetCached(
-                sourceKey,
-                () => new SportClassificationCoordinator.FrameSnapshot(frame.Pixels.ToArray(), frame.Width, frame.Height, frame.Stride));
-            _classifiedForCurrentSource = true;
-
-            // Synchronous, unlike the mutations below - ApplyClassification only ever assigns plain properties
-            // (SportIndicator.Current, Minimap.DiagramSpec/HasValidCalibration/Geometry), never touches an
-            // ObservableCollection, so it doesn't have the "enumerated while mutated" hazard those do. It must
-            // run before the `sport` read directly below, in this same call, not on a future dispatcher tick.
-            ApplyClassification(sourceKey, classification);
-        }
-
+        // Classification itself already happened in the gate above (which guarantees a non-Unknown result by
+        // this point) - this only distinguishes Confident from RecognizedButUnsupported, since the latter still
+        // has no registered geometry to run keypoint detection/calibration/minimap projection against.
         var sport = SportIndicator.Current?.Sport;
         if (sport is null || SportIndicator.Current!.Status != SportClassificationStatus.Confident)
         {

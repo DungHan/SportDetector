@@ -49,8 +49,17 @@ public sealed class SportClassificationCoordinator(
     {
         var raw = classifier.Classify(frame.Pixels, frame.Width, frame.Height, frame.Stride);
         var classification = Evaluate(raw);
-        profile.Sport = classification;
-        profileStore.Save(profile);
+
+        // An Unknown result is never cached/persisted: unlike Confident or RecognizedButUnsupported, it isn't
+        // a real answer about the source, just "this particular frame didn't look like a sport" (e.g. a crowd
+        // shot or replay before the court comes into view). Leaving profile.Sport unset means the next
+        // ClassifyOrGetCached call for this source tries again on a fresher frame instead of being stuck on it.
+        if (classification.Status != SportClassificationStatus.Unknown)
+        {
+            profile.Sport = classification;
+            profileStore.Save(profile);
+        }
+
         return classification;
     }
 
