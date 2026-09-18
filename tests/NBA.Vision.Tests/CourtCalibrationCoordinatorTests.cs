@@ -16,7 +16,7 @@ public class CourtCalibrationCoordinatorTests : IDisposable
         new(ToImage(new CourtPoint(28.6512, 15.24)), "BaselineCorner_Right_Far"),
     ];
 
-    // The 9 landmarks BasketballGeometry actually assigns a KeypointIndex to - i.e. the ones a real keypoint
+    // A subset of the landmarks BasketballGeometry assigns a KeypointIndex to - i.e. ones a real keypoint
     // detector (or its stub below) could ever report - spread across both axes so they also clear
     // CourtCalibrationCoordinator's degenerate-input guard, not just its point-count minimum.
     private static IReadOnlyList<LandmarkCorrespondence> DetectableCorrespondences() =>
@@ -26,10 +26,10 @@ public class CourtCalibrationCoordinatorTests : IDisposable
         new(ToImage(new CourtPoint(22.86, 7.62)), "FreeThrowLineCenter_Right"),
         new(ToImage(new CourtPoint(14.3256, 0)), "MidCourtLine_SidelineA"),
         new(ToImage(new CourtPoint(14.3256, 15.24)), "MidCourtLine_SidelineB"),
-        new(ToImage(new CourtPoint(0, 5.1816)), "PaintCorner_Left_A"),
-        new(ToImage(new CourtPoint(0, 10.0584)), "PaintCorner_Left_B"),
-        new(ToImage(new CourtPoint(28.6512, 5.1816)), "PaintCorner_Right_A"),
-        new(ToImage(new CourtPoint(28.6512, 10.0584)), "PaintCorner_Right_B"),
+        new(ToImage(new CourtPoint(0, 5.1816)), "PaintCorner_Left_Near"),
+        new(ToImage(new CourtPoint(0, 10.0584)), "PaintCorner_Left_Far"),
+        new(ToImage(new CourtPoint(28.6512, 5.1816)), "PaintCorner_Right_Near"),
+        new(ToImage(new CourtPoint(28.6512, 10.0584)), "PaintCorner_Right_Far"),
     ];
 
     private sealed class StubKeypointDetector(SportType sport, IReadOnlyList<DetectedKeypoint> keypoints) : ICourtKeypointDetector
@@ -91,7 +91,7 @@ public class CourtCalibrationCoordinatorTests : IDisposable
         // 3 distinct, non-collinear left-side-only landmarks (real court span: only ~20% of length, ~32% of
         // width), duplicated to clear the point-count minimum without adding any real coverage - a homography
         // fit only to this corner of the court would extrapolate badly for anything past it.
-        var leftSideOnly = new[] { "PaintCorner_Left_A", "PaintCorner_Left_B", "FreeThrowLineCenter_Left" }
+        var leftSideOnly = new[] { "PaintCorner_Left_Near", "PaintCorner_Left_Far", "FreeThrowLineCenter_Left" }
             .Select(name => DetectableCorrespondences().First(c => c.LandmarkName == name))
             .ToList();
         var keypoints = leftSideOnly.Concat(leftSideOnly)

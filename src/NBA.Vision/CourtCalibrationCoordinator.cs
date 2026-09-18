@@ -15,12 +15,13 @@ public sealed class CourtCalibrationCoordinator(ISourceProfileStore profileStore
     /// confidence threshold happened to clear on one frame, with no say over which points those are. Confirmed
     /// live: a homography computed from exactly 4 confidently-detected points was mathematically valid but
     /// projected real, spread-out tracked players into a tight cluster near mid-court - degenerate in practice,
-    /// not just in theory. Requiring a clear majority of a sport's detectable landmarks (9 of them for
-    /// basketball, per BasketballGeometry's KeypointIndex-assigned entries) makes a narrow/clustered subset far
-    /// less likely to pass, without demanding literally every landmark be confidently visible at once (which,
-    /// on a partial/panned camera view, may never happen). Lowered from 6 to 5 after live testing against
-    /// harder footage (a video-game capture with generally low keypoint confidence) showed even 6 rarely
-    /// clearing in practice - 5 still requires a clear majority of the 9, just with a little more headroom.
+    /// not just in theory. This value (5) and the reasoning above predate BasketballGeometry.cs's full
+    /// 33-keypoint mapping (previously only 9 landmarks had a KeypointIndex at all); "a clear majority of a
+    /// sport's detectable landmarks" no longer describes 5 out of 33, and <see cref="MinimumCourtCoverageFraction"/>
+    /// below is now the primary defense against a clustered-but-numerous fit (e.g. 5+ points that are all real,
+    /// confidently-detected, and yet all sit in one corner's now-denser landmark cluster - lane corners, corner
+    /// three, three-point transition, all within a few feet of each other). Revisit both constants against real
+    /// footage once the full mapping has been exercised - this was not re-tuned as part of the mapping fix.
     /// </summary>
     public const int MinimumAutoCalibratePoints = 5;
 
