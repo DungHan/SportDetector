@@ -18,6 +18,7 @@ namespace NBA.Vision;
 /// </summary>
 public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, IDisposable
 {
+    private readonly int _inputSize;
     private readonly OnnxModelPipeline<
         (byte[] Pixels, int Width, int Height, int Stride),
         (IReadOnlyList<(double X1, double Y1, double X2, double Y2, float Confidence)> Players,
@@ -33,13 +34,14 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
         string inputName = "images",
         Action<float, int>? onDiagnostics = null)
     {
+        _inputSize = inputSize;
         _pipeline = new OnnxModelPipeline<
             (byte[] Pixels, int Width, int Height, int Stride),
             (IReadOnlyList<(double, double, double, double, float)>, IReadOnlyList<(double, double, double, double, float, string)>)>(
             modelPath,
             preprocess: frame =>
             {
-                var tensor = ImagePreprocessing.ToNchwTensor(frame.Pixels, frame.Width, frame.Height, frame.Stride, inputSize, inputSize);
+                var tensor = ImagePreprocessing.ToNchwTensor(frame.Pixels, frame.Width, frame.Height, frame.Stride, inputSize, inputSize, out _);
                 return [NamedOnnxValue.CreateFromTensor(inputName, tensor)];
             },
             postprocess: results =>
@@ -97,11 +99,15 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
                         var w = output[0, 2, i];
                         var h = output[0, 3, i];
 
+                        // Left in letterboxed model-input-pixel space (not normalized to [0,1]) - Detect()
+                        // below maps these back to source-frame pixel space via the letterbox transform,
+                        // which (unlike a plain /inputSize normalization) accounts for the padding/scale a
+                        // non-square source frame gets when resized into this model's square input.
                         var box = (
-                            (cx - (w / 2)) / inputSize,
-                            (cy - (h / 2)) / inputSize,
-                            (cx + (w / 2)) / inputSize,
-                            (cy + (h / 2)) / inputSize,
+                            (double)(cx - (w / 2)),
+                            (double)(cy - (h / 2)),
+                            (double)(cx + (w / 2)),
+                            (double)(cy + (h / 2)),
                             confidence);
 
                         if (isPlayerChannel)
@@ -138,14 +144,15 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
     public MultiClassDetectionResult Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride)
     {
         var raw = _pipeline.Run((bgra8Pixels.ToArray(), width, height, stride)).Output;
+        var transform = LetterboxTransform.Compute(width, height, _inputSize, _inputSize);
 
         var players = new List<PlayerDetection>(raw.Players.Count);
         foreach (var (x1, y1, x2, y2, confidence) in raw.Players)
         {
-            var left = x1 * width;
-            var top = y1 * height;
-            var right = x2 * width;
-            var bottom = y2 * height;
+            var left = transform.MapToSourceX(x1);
+            var top = transform.MapToSourceY(y1);
+            var right = transform.MapToSourceX(x2);
+            var bottom = transform.MapToSourceY(y2);
 
             var upperBody = UpperBodyColorSampling.UpperBodyRectangle(left, top, right, bottom);
             var color = UpperBodyColorSampling.MeanColor(
@@ -157,7 +164,8 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
         var others = new List<OnCourtObjectDetection>(raw.Others.Count);
         foreach (var (x1, y1, x2, y2, confidence, className) in raw.Others)
         {
-            others.Add(new OnCourtObjectDetection(x1 * width, y1 * height, x2 * width, y2 * height, confidence, className));
+            others.Add(new OnCourtObjectDetection(
+                transform.MapToSourceX(x1), transform.MapToSourceY(y1), transform.MapToSourceX(x2), transform.MapToSourceY(y2), confidence, className));
         }
 
         return new MultiClassDetectionResult(players, others);

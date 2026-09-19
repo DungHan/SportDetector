@@ -26,7 +26,7 @@ public class ImagePreprocessingTests
     {
         var pixels = MakeSolidBgra8(sourceWidth, sourceHeight, b: 10, g: 20, r: 30);
 
-        var tensor = ImagePreprocessing.ToNchwTensor(pixels, sourceWidth, sourceHeight, sourceWidth * 4, targetWidth: 224, targetHeight: 224);
+        var tensor = ImagePreprocessing.ToNchwTensor(pixels, sourceWidth, sourceHeight, sourceWidth * 4, targetWidth: 224, targetHeight: 224, out _);
 
         Assert.Equal([1, 3, 224, 224], tensor.Dimensions.ToArray());
     }
@@ -36,12 +36,39 @@ public class ImagePreprocessingTests
     {
         var pixels = MakeSolidBgra8(8, 8, b: 0, g: 128, r: 255);
 
-        var tensor = ImagePreprocessing.ToNchwTensor(pixels, 8, 8, 8 * 4, targetWidth: 4, targetHeight: 4);
+        var tensor = ImagePreprocessing.ToNchwTensor(pixels, 8, 8, 8 * 4, targetWidth: 4, targetHeight: 4, out _);
 
         // Channel 0 = R, channel 1 = G, channel 2 = B, each normalized to [0, 1].
         Assert.Equal(1f, tensor[0, 0, 0, 0], precision: 3);
         Assert.Equal(128f / 255f, tensor[0, 1, 0, 0], precision: 3);
         Assert.Equal(0f, tensor[0, 2, 0, 0], precision: 3);
+    }
+
+    [Fact]
+    public void ToNchwTensor_NonSquareSource_LetterboxesInsteadOfStretching()
+    {
+        // 8-wide x 4-tall solid blue source into a 4x4 square target: scale = min(4/8, 4/4) = 0.5, so the
+        // content only occupies the middle 2 rows (y in [1,3)) of the 4x4 target - the remaining rows must be
+        // filled with the pad color, not a squashed sample of the source, and the transform must report that
+        // padding so callers can invert it correctly.
+        var pixels = MakeSolidBgra8(8, 4, b: 255, g: 0, r: 0);
+
+        var tensor = ImagePreprocessing.ToNchwTensor(
+            pixels, sourceWidth: 8, sourceHeight: 4, sourceStride: 8 * 4, targetWidth: 4, targetHeight: 4, out var transform);
+
+        Assert.Equal(0.5f, transform.Scale, precision: 3);
+        Assert.Equal(0, transform.PadX);
+        Assert.Equal(1, transform.PadY);
+
+        // Padding row (y=0): the Ultralytics gray pad value (114/255), not sampled source content.
+        Assert.Equal(114f / 255f, tensor[0, 0, 0, 0], precision: 3);
+        Assert.Equal(114f / 255f, tensor[0, 1, 0, 0], precision: 3);
+        Assert.Equal(114f / 255f, tensor[0, 2, 0, 0], precision: 3);
+
+        // Content row (y=1): sampled from the solid blue source.
+        Assert.Equal(0f, tensor[0, 0, 1, 0], precision: 3); // R
+        Assert.Equal(0f, tensor[0, 1, 1, 0], precision: 3); // G
+        Assert.Equal(1f, tensor[0, 2, 1, 0], precision: 3); // B
     }
 
     [Fact]

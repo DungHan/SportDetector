@@ -18,7 +18,7 @@ public sealed class OnnxSportClassifier : ISportClassifier, IDisposable
             modelPath,
             preprocess: frame =>
             {
-                var tensor = ImagePreprocessing.ToNchwTensor(frame.Pixels, frame.Width, frame.Height, frame.Stride, inputSize, inputSize);
+                var tensor = ImagePreprocessing.ToNchwTensor(frame.Pixels, frame.Width, frame.Height, frame.Stride, inputSize, inputSize, out _);
                 return [NamedOnnxValue.CreateFromTensor("input", tensor)];
             },
             postprocess: results =>

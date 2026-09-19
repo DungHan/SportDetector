@@ -71,7 +71,7 @@ public sealed class ClipZeroShotSportClassifier : ISportClassifier, IDisposable
             visionEncoderModelPath,
             preprocess: frame =>
             {
-                var tensor = ImagePreprocessing.ToNchwTensor(frame.Pixels, frame.Width, frame.Height, frame.Stride, inputSize, inputSize);
+                var tensor = ImagePreprocessing.ToNchwTensor(frame.Pixels, frame.Width, frame.Height, frame.Stride, inputSize, inputSize, out _);
                 NormalizeInPlace(tensor);
                 return [NamedOnnxValue.CreateFromTensor(inputName, tensor)];
             },

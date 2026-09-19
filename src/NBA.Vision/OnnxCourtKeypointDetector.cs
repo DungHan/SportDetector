@@ -43,7 +43,7 @@ public sealed class OnnxCourtKeypointDetector : ICourtKeypointDetector, IDisposa
             modelPath,
             preprocess: frame =>
             {
-                var tensor = ImagePreprocessing.ToNchwTensor(frame.Pixels, frame.Width, frame.Height, frame.Stride, inputSize, inputSize);
+                var tensor = ImagePreprocessing.ToNchwTensor(frame.Pixels, frame.Width, frame.Height, frame.Stride, inputSize, inputSize, out _);
                 return [NamedOnnxValue.CreateFromTensor("images", tensor)];
             },
             postprocess: results =>
@@ -82,6 +82,8 @@ public sealed class OnnxCourtKeypointDetector : ICourtKeypointDetector, IDisposa
             return [];
         }
 
+        var transform = LetterboxTransform.Compute(width, height, _inputSize, _inputSize);
+
         var keypoints = new List<DetectedKeypoint>();
         foreach (var landmark in _geometry.Landmarks)
         {
@@ -102,9 +104,9 @@ public sealed class OnnxCourtKeypointDetector : ICourtKeypointDetector, IDisposa
                 continue;
             }
 
-            var normX = pixelX / _inputSize;
-            var normY = pixelY / _inputSize;
-            keypoints.Add(new DetectedKeypoint(landmark.Name, new ImagePoint(normX * width, normY * height), confidence));
+            var sourceX = transform.MapToSourceX(pixelX);
+            var sourceY = transform.MapToSourceY(pixelY);
+            keypoints.Add(new DetectedKeypoint(landmark.Name, new ImagePoint(sourceX, sourceY), confidence));
         }
 
         return keypoints;

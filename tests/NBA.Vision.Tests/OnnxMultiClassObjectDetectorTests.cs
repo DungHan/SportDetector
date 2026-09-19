@@ -37,20 +37,34 @@ public class OnnxMultiClassObjectDetectorTests
     }
 
     [Fact]
-    public void Detect_SingleQualifyingBox_ScalesCoordinatesIndependentlyByWidthAndHeight()
+    public void Detect_NonSquareSource_MapsCoordinatesViaLetterboxTransform()
     {
-        // avgR = avgG = 0 (below threshold, box0/box1 excluded), avgB = 1.0 (box2 qualifies).
+        // avgR = avgG = 0 (below threshold, box0/box1 excluded), avgB = 1.0 (box2 qualifies). Source is 8x4
+        // (2:1) against a 4x4 square model input, so decoding must go through the letterbox transform
+        // (scale=0.5, padX=0, padY=1 - see ImagePreprocessingTests' matching letterbox test) rather than
+        // independently scaling X by width and Y by height, which would silently distort the box whenever the
+        // source frame isn't square.
         using var detector = new OnnxMultiClassObjectDetector(FixturePath, TwoClassNames, inputSize: 4, inputName: "input");
         var pixels = SolidBgra8(8, 4, b: 255, g: 0, r: 0);
 
         var result = detector.Detect(pixels, width: 8, height: 4, stride: 8 * 4);
 
+        // box2's raw model-space corners are (2.4, 2.4) - (4.0, 4.0). Left/Right have no padding to undo
+        // (padX=0), so they match a plain *2 (1/scale) rescale. Top/Bottom fall inside the letterboxed pad
+        // band (content rows only span target y in [1,3)), so they must be un-padded before rescaling:
+        // (targetY - padY) / scale.
         var box = Assert.Single(result.Players);
         Assert.Equal(4.8, box.Left, precision: 3);
-        Assert.Equal(2.4, box.Top, precision: 3);
+        Assert.Equal(2.8, box.Top, precision: 3);
         Assert.Equal(8.0, box.Right, precision: 3);
-        Assert.Equal(4.0, box.Bottom, precision: 3);
-        Assert.Equal(1.0f, box.Confidence, precision: 3);
+        Assert.Equal(6.0, box.Bottom, precision: 3);
+
+        // Not 1.0: the fixture model derives its confidence from the average color of the tensor it's
+        // actually handed (see the class doc above), and half of this 4x4 letterboxed tensor's rows are the
+        // gray pad color (114/255) rather than the source's pure blue - (1.0 + 114/255) / 2. A real trained
+        // model's confidence head has no such dependency on raw pixel averages; this is purely this
+        // synthetic fixture reacting to the padding now being fed to it.
+        Assert.Equal((1.0f + (114f / 255f)) / 2f, box.Confidence, precision: 4);
     }
 
     [Fact]
