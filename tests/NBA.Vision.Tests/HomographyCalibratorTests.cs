@@ -53,6 +53,35 @@ public class HomographyCalibratorTests
     }
 
     [Fact]
+    public void Compute_WithOneOutlierAmongGoodPoints_StillRecoversCorrectMapping()
+    {
+        // 6 good points on the known scale+translate transform, plus a 7th whose image position is wildly
+        // wrong for its claimed landmark - e.g. the keypoint model misfiring on one landmark, or a mislabeled
+        // mirrored left/right pair (see BasketballGeometry's "Unverified risk" note). A plain least-squares fit
+        // (no RANSAC) lets this one bad correspondence drag the whole homography off; RANSAC should instead
+        // treat it as an outlier and fit from the 6 good ones.
+        var goodPoints = new List<LandmarkCorrespondence>(KnownCorrespondences())
+        {
+            new(ToImage(new CourtPoint(14.3256, 0)), "MidCourtLine_SidelineA"),
+            new(ToImage(new CourtPoint(14.3256, 15.24)), "MidCourtLine_SidelineB"),
+        };
+
+        var withOutlier = new List<LandmarkCorrespondence>(goodPoints)
+        {
+            [0] = new(new ImagePoint(9999, 9999), "BaselineCorner_Left_Near"),
+        };
+
+        var result = HomographyCalibrator.Compute(SportType.Basketball, withOutlier);
+
+        Assert.True(result.Success, result.FailureReason);
+        Assert.NotNull(result.Calibration);
+
+        var projected = PointProjector.Project(result.Calibration!, ToImage(new CourtPoint(14.3256, 7.62)));
+        Assert.Equal(14.3256, projected.X, precision: 1);
+        Assert.Equal(7.62, projected.Y, precision: 1);
+    }
+
+    [Fact]
     public void Compute_UnknownLandmarkName_Fails()
     {
         var points = new List<LandmarkCorrespondence>(KnownCorrespondences())
