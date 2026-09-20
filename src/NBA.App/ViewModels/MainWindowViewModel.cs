@@ -284,6 +284,50 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Snaps every currently-tracked player's own color to whichever of this frame's two team-color clusters
+    /// it's nearest, using the same <see cref="TwoMeansColorClusterer"/> <see cref="ByteTrackPlayerTracker"/>
+    /// already runs internally for its match veto - a real broadcast has exactly two jersey colors on court, so
+    /// clustering across every player at once (rather than trusting each track's own independently-drifted
+    /// per-player EMA estimate) keeps every player on the same team rendered with the same minimap fill.
+    /// Falls back to each track's own unclustered color when fewer than two players carry one this frame -
+    /// nothing to cluster.
+    /// </summary>
+    private static Dictionary<int, (byte R, byte G, byte B)?> AssignTeamDisplayColors(IReadOnlyList<TrackedPlayer> trackedPlayers)
+    {
+        var coloredCount = trackedPlayers.Count(t => t.Color.HasValue);
+        if (coloredCount < 2)
+        {
+            return trackedPlayers.ToDictionary(t => t.TrackId, t => t.Color);
+        }
+
+        var centroids = TwoMeansColorClusterer.Cluster(
+            trackedPlayers.Where(t => t.Color.HasValue).Select(t => t.Color!.Value).ToList());
+
+        return trackedPlayers.ToDictionary(t => t.TrackId, t => NearestCentroidColor(t.Color, centroids));
+    }
+
+    private static (byte R, byte G, byte B)? NearestCentroidColor(
+        (byte R, byte G, byte B)? color,
+        ((double R, double G, double B) CentroidA, (double R, double G, double B) CentroidB) centroids)
+    {
+        if (color is not { } c)
+        {
+            return null;
+        }
+
+        var point = ((double)c.R, (double)c.G, (double)c.B);
+        var nearest = TwoMeansColorClusterer.SquaredDistance(point, centroids.CentroidA)
+            <= TwoMeansColorClusterer.SquaredDistance(point, centroids.CentroidB)
+            ? centroids.CentroidA
+            : centroids.CentroidB;
+
+        return (
+            (byte)Math.Clamp(Math.Round(nearest.R), 0, 255),
+            (byte)Math.Clamp(Math.Round(nearest.G), 0, 255),
+            (byte)Math.Clamp(Math.Round(nearest.B), 0, 255));
+    }
+
     private static PlayerDetection OffsetToFullFrame(PlayerDetection detection, int left, int top) =>
         new(detection.Left + left, detection.Top + top, detection.Right + left, detection.Bottom + top, detection.Confidence, detection.Color);
 
@@ -721,8 +765,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             // something a viewer needs to see once the diagram itself already draws the court lines. Foot point
             // (bottom-center of the box) rather than the box itself - the minimap plots a single court-space
             // position per player, not an area (dual-view-shell spec's "Minimap plots tracked players' court
-            // positions"). Carries the track's sampled jersey color so MinimapView.axaml.cs can fill each
-            // marker with it instead of one flat color for every player.
+            // positions"). Carries the track's own color snapped to one of this frame's two team-color clusters
+            // (see AssignTeamDisplayColors) so MinimapView.axaml.cs fills every player on a team with the same
+            // color instead of each track's own independently-drifted shade.
+            var teamDisplayColors = AssignTeamDisplayColors(trackedPlayers);
             var playerMarkers = trackedPlayers
                 .OrderBy(t => t.FramesSinceMatch)
                 .ThenByDescending(t => t.Confidence)
@@ -732,7 +778,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                     var footPoint = new ImagePoint((t.Left + t.Right) / 2, t.Bottom);
                     var court = PointProjector.Project(calibration, footPoint);
                     var label = resolvedJerseyNumbers.TryGetValue(t.TrackId, out var number) ? $"#{number}" : $"#{t.TrackId}";
-                    return new CourtMarker(court.X, court.Y, label, "player", t.Color);
+                    return new CourtMarker(court.X, court.Y, label, "player", teamDisplayColors[t.TrackId]);
                 });
 
             markers = playerMarkers.ToList();
