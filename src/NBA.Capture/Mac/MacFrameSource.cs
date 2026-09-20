@@ -10,6 +10,17 @@ namespace NBA.Capture.Mac;
 /// timer (~30fps) instead. Still satisfies the same frame-capture contract as the Windows backend: runtime
 /// source switching without requiring <see cref="StopAsync"/> first, source-lost detection, and
 /// latest-frame-wins delivery via <see cref="LatestFrameBuffer{T}"/>.
+///
+/// Capturing and raising <see cref="FrameArrived"/> run as two independent loops (<see cref="PollLoopAsync"/>
+/// and <see cref="DispatchLoopAsync"/>) rather than one - a subscriber whose handler is slower than 33ms (e.g.
+/// running ONNX inference) used to block this poll loop's next <c>CGWindowListCreateImage</c>/
+/// <c>CGDisplayCreateImage</c> call until it returned, so capture itself slowed down to match the slowest
+/// subscriber and a backlog of screen-staleness built up continuously during playback (only visibly "catching
+/// up" once the on-screen content stopped changing, e.g. the user pausing video, and the backlog stopped
+/// growing). Splitting the two means capture always runs at the full poll rate and <see cref="DispatchLoopAsync"/>
+/// always hands a busy subscriber the *latest* buffered frame once it's free, silently dropping whatever was
+/// captured in between rather than queuing it - so the subscriber is always at most one poll interval stale,
+/// never an accumulating backlog.
 /// </summary>
 public sealed class MacFrameSource : IFrameSource
 {
@@ -21,6 +32,7 @@ public sealed class MacFrameSource : IFrameSource
 
     private CancellationTokenSource? _pollCts;
     private Task? _pollTask;
+    private Task? _dispatchTask;
 
     public CaptureSourceState State { get; private set; } = CaptureSourceState.NotStarted;
 
@@ -59,6 +71,7 @@ public sealed class MacFrameSource : IFrameSource
 
             _pollCts = new CancellationTokenSource();
             _pollTask = Task.Run(() => PollLoopAsync(source, _pollCts.Token));
+            _dispatchTask = Task.Run(() => DispatchLoopAsync(_pollCts.Token));
 
             State = CaptureSourceState.Running;
         }
@@ -80,30 +93,39 @@ public sealed class MacFrameSource : IFrameSource
         }
     }
 
-    /// <summary>Cancels and awaits the current poll loop (if any), so no more <see cref="_buffer"/> writes are in flight once this returns.</summary>
+    /// <summary>Cancels and awaits the current poll and dispatch loops (if any), so no more <see cref="_buffer"/> writes or <see cref="FrameArrived"/> raises are in flight once this returns.</summary>
     private async Task StopPollLoopAsync()
     {
         CancellationTokenSource? cts;
-        Task? task;
+        Task? pollTask;
+        Task? dispatchTask;
 
         lock (_lifecycleLock)
         {
             cts = _pollCts;
-            task = _pollTask;
+            pollTask = _pollTask;
+            dispatchTask = _dispatchTask;
             _pollCts = null;
             _pollTask = null;
+            _dispatchTask = null;
         }
 
         cts?.Cancel();
-        if (task is not null)
+
+        foreach (var task in new[] { pollTask, dispatchTask })
         {
+            if (task is null)
+            {
+                continue;
+            }
+
             try
             {
                 await task.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
-                // Expected: the poll loop observes cancellation and unwinds.
+                // Expected: the loop observes cancellation and unwinds.
             }
         }
 
@@ -144,6 +166,39 @@ public sealed class MacFrameSource : IFrameSource
 
                 consecutiveFailures = 0;
                 _buffer.Publish(frame);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected on StopAsync()/StartAsync() switching away from this source.
+        }
+    }
+
+    /// <summary>
+    /// Raises <see cref="FrameArrived"/> once per available frame, independent of <see cref="PollLoopAsync"/>'s
+    /// capture cadence (see type-level doc comment). Always dispatches whatever is currently latest in
+    /// <see cref="_buffer"/> rather than a queue: if a subscriber is still busy with the previous frame when
+    /// several new ones land, it picks up the newest one next and the rest are silently dropped - the same
+    /// latest-frame-wins contract <see cref="LatestFrameBuffer{T}"/> already gives <see cref="TryGetLatestFrame"/>,
+    /// now also applied to event delivery. Falls back to <see cref="LatestFrameBuffer{T}.WaitForNextAsync"/>
+    /// (rather than busy-polling) whenever it has already caught up to the newest frame, so an idle subscriber
+    /// isn't woken redundantly for a frame it already saw.
+    /// </summary>
+    private async Task DispatchLoopAsync(CancellationToken cancellationToken)
+    {
+        CapturedFrame? lastDispatched = null;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var frame = _buffer.TryGetLatest();
+                if (frame is null || ReferenceEquals(frame, lastDispatched))
+                {
+                    frame = await _buffer.WaitForNextAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                lastDispatched = frame;
 
                 try
                 {
@@ -151,11 +206,11 @@ public sealed class MacFrameSource : IFrameSource
                 }
                 catch (Exception ex)
                 {
-                    // A subscriber (e.g. a detector's inference call) throwing must not kill this poll loop -
+                    // A subscriber (e.g. a detector's inference call) throwing must not kill this dispatch loop -
                     // there's no push-based recapture on macOS, so once this loop exits, frames stop arriving
                     // for good until the source is restarted. See MainWindowViewModel.OnFrameArrived, which
                     // guards its own detector calls but can't guard against subscribers added elsewhere.
-                    Console.WriteLine($"[frame-arrived] subscriber threw, continuing poll loop: {ex.Message}");
+                    Console.WriteLine($"[frame-arrived] subscriber threw, continuing dispatch loop: {ex.Message}");
                 }
             }
         }

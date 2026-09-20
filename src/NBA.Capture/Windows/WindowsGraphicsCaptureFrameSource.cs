@@ -15,6 +15,14 @@ namespace NBA.Capture.Windows;
 ///
 /// NOT verified end-to-end on this machine (no Windows host available to run it) - see tasks.md and
 /// design.md's "No trained court keypoint model exists yet" risk entry's sibling concern for capture.
+///
+/// <see cref="OnFrameArrived"/> (the frame pool's own callback) only does the GPU->CPU copy and
+/// <see cref="_buffer"/> publish, then returns immediately - it does not raise the public <see cref="FrameArrived"/>
+/// event itself. That's done by a separate <see cref="DispatchLoopAsync"/> loop, so a subscriber slower than
+/// the capture rate (e.g. running ONNX inference) can never delay <c>OnFrameArrived</c> from calling
+/// <c>TryGetNextFrame</c> again - <c>Direct3D11CaptureFramePool</c> only has 2 buffers, so a slow subscriber
+/// blocking this callback risked stalling the capture session itself, not just delaying detection. Mirrors the
+/// same split <c>MacFrameSource</c> uses, for the same reason (see its type-level doc comment).
 /// </summary>
 public sealed class WindowsGraphicsCaptureFrameSource : IFrameSource
 {
@@ -27,6 +35,8 @@ public sealed class WindowsGraphicsCaptureFrameSource : IFrameSource
     private Direct3D11CaptureFramePool? _framePool;
     private GraphicsCaptureSession? _session;
     private global::Windows.Graphics.SizeInt32 _lastSize;
+    private CancellationTokenSource? _dispatchCts;
+    private Task? _dispatchTask;
 
     public CaptureSourceState State { get; private set; } = CaptureSourceState.NotStarted;
 
@@ -71,6 +81,9 @@ public sealed class WindowsGraphicsCaptureFrameSource : IFrameSource
 
             _session = _framePool.CreateCaptureSession(_item);
             _session.StartCapture();
+
+            _dispatchCts = new CancellationTokenSource();
+            _dispatchTask = Task.Run(() => DispatchLoopAsync(_dispatchCts.Token));
 
             State = CaptureSourceState.Running;
 
@@ -128,6 +141,15 @@ public sealed class WindowsGraphicsCaptureFrameSource : IFrameSource
 
     private void StopSessionLocked()
     {
+        // Not awaited (this method is synchronous, called from within _lifecycleLock) - cancellation is
+        // enough to stop the loop from raising any further FrameArrived events almost immediately, and the
+        // dispatch loop touches no state here beyond the shared _buffer, which is cleared by the caller right
+        // after this returns.
+        _dispatchCts?.Cancel();
+        _dispatchCts?.Dispose();
+        _dispatchCts = null;
+        _dispatchTask = null;
+
         if (_item is not null)
         {
             _item.Closed -= OnItemClosed;
@@ -205,11 +227,54 @@ public sealed class WindowsGraphicsCaptureFrameSource : IFrameSource
             };
 
             _buffer.Publish(capturedFrame);
-            FrameArrived?.Invoke(this, new FrameArrivedEventArgs(capturedFrame));
         }
         finally
         {
             _d3dDevice.ImmediateContext.Unmap(staging, 0);
+        }
+    }
+
+    /// <summary>
+    /// Raises <see cref="FrameArrived"/> once per available frame, independent of <see cref="OnFrameArrived"/>'s
+    /// own capture-callback cadence (see type-level doc comment). Always dispatches whatever is currently
+    /// latest in <see cref="_buffer"/> rather than a queue: if a subscriber is still busy with the previous
+    /// frame when several new ones land, it picks up the newest one next and the rest are silently dropped -
+    /// the same latest-frame-wins contract <see cref="LatestFrameBuffer{T}"/> already gives
+    /// <see cref="TryGetLatestFrame"/>, now also applied to event delivery. Falls back to
+    /// <see cref="LatestFrameBuffer{T}.WaitForNextAsync"/> (rather than busy-polling) whenever it has already
+    /// caught up to the newest frame, so an idle subscriber isn't woken redundantly for a frame it already saw.
+    /// </summary>
+    private async Task DispatchLoopAsync(CancellationToken cancellationToken)
+    {
+        CapturedFrame? lastDispatched = null;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var frame = _buffer.TryGetLatest();
+                if (frame is null || ReferenceEquals(frame, lastDispatched))
+                {
+                    frame = await _buffer.WaitForNextAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                lastDispatched = frame;
+
+                try
+                {
+                    FrameArrived?.Invoke(this, new FrameArrivedEventArgs(frame));
+                }
+                catch (Exception ex)
+                {
+                    // A subscriber (e.g. a detector's inference call) throwing must not kill this dispatch
+                    // loop or bubble into the frame pool's own callback thread.
+                    Console.WriteLine($"[frame-arrived] subscriber threw, continuing dispatch loop: {ex.Message}");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected on StopAsync()/StartAsync() switching away from this source.
         }
     }
 }
