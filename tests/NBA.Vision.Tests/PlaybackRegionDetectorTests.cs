@@ -100,6 +100,23 @@ public class PlaybackRegionDetectorTests
     }
 
     [Fact]
+    public void TryGetRegion_DoesNotBridgeSmallNearbyNoiseComponent_KeepsOnlyMainRegion()
+    {
+        var detector = new PlaybackRegionDetector(gridWidth: 32, gridHeight: 18, minimumFrames: 10);
+
+        // Main region: 10x6 cells. A small (2x1-cell) flickering patch sits just 1 cell away, within bridging
+        // distance - but below the minimum size to count as a real disconnected chunk of the game (as opposed
+        // to page noise like a ticking counter or hover animation), so it must not pull the box wider.
+        AccumulateFlickeringRegion(detector, frameCount: 20, (100, 50, 100, 60), (210, 50, 20, 10));
+
+        Assert.True(detector.TryGetRegion(out var region));
+        Assert.Equal(100.0 / Width, region.X, precision: 3);
+        Assert.Equal(50.0 / Height, region.Y, precision: 3);
+        Assert.Equal(100.0 / Width, region.Width, precision: 3);
+        Assert.Equal(60.0 / Height, region.Height, precision: 3);
+    }
+
+    [Fact]
     public void TryGetRegion_WithNoMotionAtAll_ReturnsFalse()
     {
         var detector = new PlaybackRegionDetector(gridWidth: 32, gridHeight: 18, minimumFrames: 5);

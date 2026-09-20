@@ -14,13 +14,23 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
     public const float ActivityThresholdRatio = 0.15f;
 
     /// <summary>
-    /// Grid-cell radius used only to decide connectivity for the largest-component search, not the final
-    /// rectangle's bounds - bridges an on-court cell that happens to be quiet this sampling window (e.g. a
-    /// player who barely moved) so it doesn't fracture the game region into disconnected pieces that then lose
-    /// to a larger unrelated component. Small enough that a genuinely separate motion source elsewhere in the
-    /// frame (an autoplay thumbnail, a blinking icon) still isn't bridged in.
+    /// Grid-cell gap (between bounding boxes, not per-cell) within which a second component is folded into the
+    /// main region - bridges a nearby chunk of the game that happens to be quiet this sampling window (e.g. a
+    /// player who barely moved), which would otherwise fracture the game region into disconnected pieces and
+    /// lose the smaller piece entirely. Deliberately a bounded, component-level check (each candidate compared
+    /// once against the growing merged box) rather than per-cell dilation: dilating every quiet cell within
+    /// this radius and re-running connectivity on that let scattered low-level motion anywhere on a real page
+    /// (an autoplaying thumbnail, a ticking view counter) chain-bridge its way into one component spanning the
+    /// entire capture, which is exactly the failure this is meant to prevent.
     /// </summary>
     private const int ConnectivityBridgeRadius = 2;
+
+    /// <summary>
+    /// A component smaller than this many cells never bridges into another component, regardless of distance -
+    /// it reads as isolated UI noise (a blinking icon, a moving cursor), not a disconnected chunk of the game
+    /// substantial enough to be worth reclaiming.
+    /// </summary>
+    private const int MinimumBridgeComponentSize = 6;
 
     private readonly float[] _previousCellLuma = new float[gridWidth * gridHeight];
     private readonly float[] _cellEnergy = new float[gridWidth * gridHeight];
@@ -130,16 +140,69 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
 
     private bool TryFindLargestComponent(bool[] active, out int minX, out int minY, out int maxX, out int maxY)
     {
-        var connectivity = Dilate(active);
-        var visited = new bool[connectivity.Length];
-        var queue = new Queue<int>();
-        var bestSize = 0;
-        minX = minY = maxX = maxY = 0;
-        var bestFound = false;
-
-        for (var start = 0; start < connectivity.Length; start++)
+        var components = FindComponents(active);
+        if (components.Count == 0)
         {
-            if (!connectivity[start] || visited[start])
+            minX = minY = maxX = maxY = 0;
+            return false;
+        }
+
+        components.Sort((a, b) => b.Size.CompareTo(a.Size));
+        var merged = components[0];
+        var used = new bool[components.Count];
+        used[0] = true;
+
+        // Bounded by the component count (each pass either merges at least one more component or stops), not
+        // a per-cell search - a candidate is only ever compared against the growing merged box, so this can't
+        // chain-bridge through a long trail of small, unrelated components the way per-cell dilation could.
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            for (var i = 1; i < components.Count; i++)
+            {
+                if (used[i] || components[i].Size < MinimumBridgeComponentSize)
+                {
+                    continue;
+                }
+
+                var candidate = components[i];
+                var gapX = GapAlongAxis(merged.MinX, merged.MaxX, candidate.MinX, candidate.MaxX);
+                var gapY = GapAlongAxis(merged.MinY, merged.MaxY, candidate.MinY, candidate.MaxY);
+                if (gapX > ConnectivityBridgeRadius || gapY > ConnectivityBridgeRadius)
+                {
+                    continue;
+                }
+
+                merged = new Component(
+                    Math.Min(merged.MinX, candidate.MinX),
+                    Math.Min(merged.MinY, candidate.MinY),
+                    Math.Max(merged.MaxX, candidate.MaxX),
+                    Math.Max(merged.MaxY, candidate.MaxY),
+                    merged.Size + candidate.Size);
+                used[i] = true;
+                changed = true;
+            }
+        }
+
+        minX = merged.MinX;
+        minY = merged.MinY;
+        maxX = merged.MaxX;
+        maxY = merged.MaxY;
+        return true;
+    }
+
+    private readonly record struct Component(int MinX, int MinY, int MaxX, int MaxY, int Size);
+
+    private List<Component> FindComponents(bool[] active)
+    {
+        var visited = new bool[active.Length];
+        var queue = new Queue<int>();
+        var components = new List<Component>();
+
+        for (var start = 0; start < active.Length; start++)
+        {
+            if (!active[start] || visited[start])
             {
                 continue;
             }
@@ -157,83 +220,40 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
                 var index = queue.Dequeue();
                 var cellX = index % gridWidth;
                 var cellY = index / gridWidth;
+                size++;
+                componentMinX = Math.Min(componentMinX, cellX);
+                componentMaxX = Math.Max(componentMaxX, cellX);
+                componentMinY = Math.Min(componentMinY, cellY);
+                componentMaxY = Math.Max(componentMaxY, cellY);
 
-                // The rectangle's bounds are measured from the original, undilated activity only - the
-                // dilated mask above exists solely to decide connectivity, so a bridged-but-quiet cell widens
-                // the component without itself stretching the reported bounds.
-                if (active[index])
-                {
-                    size++;
-                    componentMinX = Math.Min(componentMinX, cellX);
-                    componentMaxX = Math.Max(componentMaxX, cellX);
-                    componentMinY = Math.Min(componentMinY, cellY);
-                    componentMaxY = Math.Max(componentMaxY, cellY);
-                }
-
-                TryEnqueueNeighbor(cellX - 1, cellY, connectivity, visited, queue);
-                TryEnqueueNeighbor(cellX + 1, cellY, connectivity, visited, queue);
-                TryEnqueueNeighbor(cellX, cellY - 1, connectivity, visited, queue);
-                TryEnqueueNeighbor(cellX, cellY + 1, connectivity, visited, queue);
+                TryEnqueueNeighbor(cellX - 1, cellY, active, visited, queue);
+                TryEnqueueNeighbor(cellX + 1, cellY, active, visited, queue);
+                TryEnqueueNeighbor(cellX, cellY - 1, active, visited, queue);
+                TryEnqueueNeighbor(cellX, cellY + 1, active, visited, queue);
             }
 
-            if (size > bestSize)
-            {
-                bestSize = size;
-                minX = componentMinX;
-                minY = componentMinY;
-                maxX = componentMaxX;
-                maxY = componentMaxY;
-                bestFound = true;
-            }
+            components.Add(new Component(componentMinX, componentMinY, componentMaxX, componentMaxY, size));
         }
 
-        return bestFound;
+        return components;
     }
 
-    private bool[] Dilate(bool[] active)
+    private static int GapAlongAxis(int minA, int maxA, int minB, int maxB)
     {
-        var dilated = new bool[active.Length];
-        for (var y = 0; y < gridHeight; y++)
+        if (maxA < minB)
         {
-            for (var x = 0; x < gridWidth; x++)
-            {
-                var index = (y * gridWidth) + x;
-                if (active[index])
-                {
-                    dilated[index] = true;
-                    continue;
-                }
-
-                for (var dy = -ConnectivityBridgeRadius; dy <= ConnectivityBridgeRadius && !dilated[index]; dy++)
-                {
-                    var ny = y + dy;
-                    if (ny < 0 || ny >= gridHeight)
-                    {
-                        continue;
-                    }
-
-                    for (var dx = -ConnectivityBridgeRadius; dx <= ConnectivityBridgeRadius; dx++)
-                    {
-                        var nx = x + dx;
-                        if (nx < 0 || nx >= gridWidth)
-                        {
-                            continue;
-                        }
-
-                        if (active[(ny * gridWidth) + nx])
-                        {
-                            dilated[index] = true;
-                            break;
-                        }
-                    }
-                }
-            }
+            return minB - maxA - 1;
         }
 
-        return dilated;
+        if (maxB < minA)
+        {
+            return minA - maxB - 1;
+        }
+
+        return 0;
     }
 
-    private void TryEnqueueNeighbor(int x, int y, bool[] connectivity, bool[] visited, Queue<int> queue)
+    private void TryEnqueueNeighbor(int x, int y, bool[] active, bool[] visited, Queue<int> queue)
     {
         if (x < 0 || x >= gridWidth || y < 0 || y >= gridHeight)
         {
@@ -241,7 +261,7 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
         }
 
         var index = (y * gridWidth) + x;
-        if (!connectivity[index] || visited[index])
+        if (!active[index] || visited[index])
         {
             return;
         }
