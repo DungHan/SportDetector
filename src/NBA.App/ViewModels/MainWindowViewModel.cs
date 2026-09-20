@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Windows.Input;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
@@ -76,6 +77,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private int _frameCounter;
     private long _perfFrameSequence;
     private DateTimeOffset? _perfLastFrameArrivedAt;
+    private static int _colorDebugDumpCount;
 
     public MainWindowViewModel(
         IFrameSource frameSource,
@@ -246,8 +248,44 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             ? FrameCropper.Crop(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride, region.X, region.Y, region.Width, region.Height)
             : null;
 
+    // TEMPORARY debug aid: dumps the full playback crop plus each player's sampled upper-body sub-rectangle to
+    // /tmp/color-debug so the actual sampled pixels can be inspected visually - remove once the color-sampling
+    // bug is diagnosed.
+    private static void DumpColorDebugImages(CroppedFrame crop, IReadOnlyList<PlayerDetection> players)
+    {
+        var dir = "/tmp/color-debug";
+        Directory.CreateDirectory(dir);
+
+        FrameBitmapConverter.ToWriteableBitmap(crop.Pixels, crop.Width, crop.Height, crop.Stride)
+            .Save(Path.Combine(dir, $"dump{_colorDebugDumpCount}_full.png"));
+
+        for (var i = 0; i < players.Count; i++)
+        {
+            var p = players[i];
+            var box = FrameCropper.Crop(crop.Pixels, crop.Width, crop.Height, crop.Stride,
+                p.Left / crop.Width, p.Top / crop.Height, (p.Right - p.Left) / crop.Width, (p.Bottom - p.Top) / crop.Height);
+            if (box.Width > 0 && box.Height > 0)
+            {
+                FrameBitmapConverter.ToWriteableBitmap(box.Pixels, box.Width, box.Height, box.Stride)
+                    .Save(Path.Combine(dir, $"dump{_colorDebugDumpCount}_p{i}_box.png"));
+            }
+
+            var upperBody = UpperBodyColorSampling.UpperBodyRectangle(p.Left, p.Top, p.Right, p.Bottom);
+            var sample = FrameCropper.Crop(crop.Pixels, crop.Width, crop.Height, crop.Stride,
+                upperBody.Left / crop.Width, upperBody.Top / crop.Height,
+                (upperBody.Right - upperBody.Left) / crop.Width, (upperBody.Bottom - upperBody.Top) / crop.Height);
+            if (sample.Width > 0 && sample.Height > 0)
+            {
+                FrameBitmapConverter.ToWriteableBitmap(sample.Pixels, sample.Width, sample.Height, sample.Stride)
+                    .Save(Path.Combine(dir, $"dump{_colorDebugDumpCount}_p{i}_sample.png"));
+            }
+
+            Console.WriteLine($"[color-debug] p{i} box=({p.Left:F0},{p.Top:F0},{p.Right:F0},{p.Bottom:F0}) sample=({upperBody.Left:F0},{upperBody.Top:F0},{upperBody.Right:F0},{upperBody.Bottom:F0})");
+        }
+    }
+
     private static PlayerDetection OffsetToFullFrame(PlayerDetection detection, int left, int top) =>
-        new(detection.Left + left, detection.Top + top, detection.Right + left, detection.Bottom + top, detection.Confidence);
+        new(detection.Left + left, detection.Top + top, detection.Right + left, detection.Bottom + top, detection.Confidence, detection.Color);
 
     private static OnCourtObjectDetection OffsetToFullFrame(OnCourtObjectDetection detection, int left, int top) =>
         new(detection.Left + left, detection.Top + top, detection.Right + left, detection.Bottom + top, detection.Confidence, detection.ClassName);
@@ -483,20 +521,41 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             MultiClassDetectionResult detectionResult;
             try
             {
-                var playerResult = playbackCrop is { } playerCrop
+                // Two independent models/sessions with no shared state between them (each a full YOLOv8m
+                // forward pass at its own input resolution - see models/README.md) - run concurrently instead
+                // of sequentially so this stage's wall-clock cost is roughly max(playerMs, ballMs) instead of
+                // their sum. ProcessFrame itself is synchronous, so this still blocks here until both finish;
+                // only the two Detect() calls themselves overlap.
+                var playerTask = Task.Run(() => playbackCrop is { } playerCrop
                     ? _multiClassObjectDetector.Detect(playerCrop.Pixels, playerCrop.Width, playerCrop.Height, playerCrop.Stride)
-                    : _multiClassObjectDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-                var ballResult = playbackCrop is { } ballCrop
+                    : _multiClassObjectDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride));
+                var ballTask = Task.Run(() => playbackCrop is { } ballCrop
                     ? _ballDetector.Detect(ballCrop.Pixels, ballCrop.Width, ballCrop.Height, ballCrop.Stride)
-                    : _ballDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+                    : _ballDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride));
+                Task.WaitAll(playerTask, ballTask);
+                var playerResult = playerTask.Result;
+                var ballResult = ballTask.Result;
 
                 detectionResult = new MultiClassDetectionResult(
                     playerResult.Players,
                     [.. playerResult.Others, .. ballResult.Others]);
+
+                var coloredCount = detectionResult.Players.Count(p => p.Color.HasValue);
+                var sampleColors = string.Join(" ", detectionResult.Players.Take(5).Select(p => p.Color is { } c ? $"({c.R},{c.G},{c.B})" : "null"));
+                Console.WriteLine($"[color-debug] players={detectionResult.Players.Count} colored={coloredCount} cropped={(playbackCrop is not null)} rgb={sampleColors}");
+
+                if (playbackCrop is { } dumpCrop && _colorDebugDumpCount < 2)
+                {
+                    _colorDebugDumpCount++;
+                    DumpColorDebugImages(dumpCrop, playerResult.Players);
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[player-detect] detection failed for this frame, treating as none: {ex.Message}");
+                // Task.WaitAll wraps a faulted task's exception in an AggregateException - unwrap it so this
+                // log line still names the actual failure instead of "One or more errors occurred.".
+                var message = ex is AggregateException aggregate ? aggregate.InnerException?.Message ?? ex.Message : ex.Message;
+                Console.WriteLine($"[player-detect] detection failed for this frame, treating as none: {message}");
                 detectionResult = new MultiClassDetectionResult(Players: [], Others: []);
             }
 
@@ -519,6 +578,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             // unlabeled per-frame foot-point.
             trackedPlayers = _playerTracker.Update(fullFrameResult.Players);
             _lastOtherDetections = fullFrameResult.Others;
+
+            var trackedColoredCount = trackedPlayers.Count(t => t.Color.HasValue);
+            var trackedSampleColors = string.Join(" ", trackedPlayers.Take(5).Select(t => t.Color is { } c ? $"#{t.TrackId}=({c.R},{c.G},{c.B})" : $"#{t.TrackId}=null"));
+            Console.WriteLine($"[color-debug] tracked={trackedPlayers.Count} trackedColored={trackedColoredCount} rgb={trackedSampleColors}");
 
             Console.WriteLine($"[perf#{sequence}] detect={detectStopwatch.ElapsedMilliseconds}ms players={fullFrameResult.Players.Count}");
         }
@@ -617,7 +680,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[scoreboard-ocr] recognition failed for this frame, keeping last known state: {ex.Message}");
+                // Temporarily logging the full exception (not just ex.Message) - this has been failing on
+                // every attempt in testing and ex.Message alone ("Object reference not set to an instance of
+                // an object.") doesn't say where. Revert to ex.Message once the actual null site is found.
+                Console.WriteLine($"[scoreboard-ocr] recognition failed for this frame, keeping last known state: {ex}");
             }
 
             Console.WriteLine($"[perf#{sequence}] scoreboardOcr={scoreboardStopwatch.ElapsedMilliseconds}ms");
