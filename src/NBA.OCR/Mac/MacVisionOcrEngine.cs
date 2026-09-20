@@ -15,6 +15,15 @@ namespace NBA.OCR.Mac;
 /// </summary>
 public sealed class MacVisionOcrEngine : IScoreboardOcrEngine
 {
+    // The Swift helper's JSONEncoder emits its Encodable struct's own property names verbatim - lowercase
+    // "text"/"confidence" (see SwiftTool/main.swift's RecognizedLine) - which don't case-sensitively match
+    // HelperLine's PascalCase Text/Confidence. JsonSerializer.Deserialize defaults to case-sensitive property
+    // matching, so without this, every deserialized HelperLine silently got Text = null (the string default)
+    // regardless of what Vision actually recognized - RunHelper below then handed ScoreboardTextParser.Parse a
+    // list of lines with a null Text, which crashed on line.Text.Split with a NullReferenceException on every
+    // frame that had any recognized text at all (an empty Vision result, i.e. no lines, never got this far).
+    private static readonly JsonSerializerOptions HelperLineOptions = new() { PropertyNameCaseInsensitive = true };
+
     private readonly string _swiftSourcePath;
     private readonly string _cacheDirectory;
     private readonly Lock _compileLock = new();
@@ -137,7 +146,7 @@ public sealed class MacVisionOcrEngine : IScoreboardOcrEngine
             return [];
         }
 
-        var parsed = JsonSerializer.Deserialize<HelperLine[]>(stdout);
+        var parsed = JsonSerializer.Deserialize<HelperLine[]>(stdout, HelperLineOptions);
         return parsed?.Select(l => new ScoreboardOcrLine(l.Text, l.Confidence)).ToArray() ?? [];
     }
 
