@@ -17,14 +17,16 @@ public class UpperBodyColorSamplingTests
     }
 
     [Fact]
-    public void UpperBodyRectangle_NormalBox_NarrowsToTopFractionOfHeightFullWidth()
+    public void UpperBodyRectangle_NormalBox_NarrowsToCenteredTorsoBand()
     {
+        // Width 20 (10 to 30): 20% of 20 = 4 trimmed off each side -> [14, 26).
+        // Height 100 (20 to 120): top margin 20% = 20 -> top 40; band to 55% = 55 -> bottom 75.
         var rect = UpperBodyColorSampling.UpperBodyRectangle(left: 10, top: 20, right: 30, bottom: 120);
 
-        Assert.Equal(10, rect.Left);
-        Assert.Equal(20, rect.Top);
-        Assert.Equal(30, rect.Right);
-        Assert.Equal(60, rect.Bottom); // 20 + (100 * 0.4)
+        Assert.Equal(14, rect.Left);
+        Assert.Equal(40, rect.Top);
+        Assert.Equal(26, rect.Right);
+        Assert.Equal(75, rect.Bottom);
     }
 
     [Fact]
@@ -34,6 +36,18 @@ public class UpperBodyColorSamplingTests
 
         Assert.Equal(40, rect.Top);
         Assert.Equal(40, rect.Bottom);
+    }
+
+    [Fact]
+    public void UpperBodyRectangle_WideBoxFromExtendedLimb_TrimsSidesInsteadOfSamplingFullWidth()
+    {
+        // A shooting/dribbling pose widens the detection box with an outstretched arm - the sampled rectangle
+        // should stay centered on the torso rather than spanning that full width (see the type-level doc
+        // comment on why full-width sampling pulls in court/crowd background instead of jersey fabric).
+        var rect = UpperBodyColorSampling.UpperBodyRectangle(left: 0, top: 0, right: 100, bottom: 200);
+
+        Assert.Equal(20, rect.Left);
+        Assert.Equal(80, rect.Right);
     }
 
     [Fact]

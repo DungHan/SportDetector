@@ -9,18 +9,33 @@ namespace NBA.Vision;
 /// </summary>
 public static class UpperBodyColorSampling
 {
-    /// <summary>Fraction of the box's height, measured from its top, sampled as the upper-body region.</summary>
-    public const double HeightFraction = 0.4;
+    /// <summary>Fraction of the box's height, measured from its top, excluded as the head/hair region.</summary>
+    public const double TopMarginFraction = 0.2;
+
+    /// <summary>Fraction of the box's height, measured from its top, sampled as the upper-body region (down to the waist, stopping before shorts).</summary>
+    public const double HeightFraction = 0.55;
+
+    /// <summary>Fraction of the box's width trimmed from each side, to avoid an extended arm/leg (and the background beside it) pulling the average off the jersey's own color.</summary>
+    public const double SideMarginFraction = 0.2;
 
     /// <summary>
-    /// Narrows a detection box to its upper-body sub-rectangle (top <see cref="HeightFraction"/> of height,
-    /// full width) - a pure function with no pixel access, independently testable from any buffer.
+    /// Narrows a detection box to its upper-body sub-rectangle: vertically, the band from
+    /// <see cref="TopMarginFraction"/> to <see cref="HeightFraction"/> of height (skipping the head, stopping
+    /// before shorts); horizontally, the centered band with <see cref="SideMarginFraction"/> trimmed off each
+    /// side (a full-body detection box widens whenever a limb extends sideways - e.g. a shooting or dribbling
+    /// pose - and sampling that full width pulls in a lot of court/crowd background rather than jersey fabric).
+    /// A pure function with no pixel access, independently testable from any buffer.
     /// </summary>
     public static (double Left, double Top, double Right, double Bottom) UpperBodyRectangle(
         double left, double top, double right, double bottom)
     {
         var height = bottom - top;
-        return (left, top, right, top + (height * HeightFraction));
+        var width = right - left;
+        return (
+            left + (width * SideMarginFraction),
+            top + (height * TopMarginFraction),
+            right - (width * SideMarginFraction),
+            top + (height * HeightFraction));
     }
 
     /// <summary>
