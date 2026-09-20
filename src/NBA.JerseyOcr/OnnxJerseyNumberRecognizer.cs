@@ -78,9 +78,25 @@ public sealed class OnnxJerseyNumberRecognizer : IJerseyNumberRecognizer, IDispo
             return new JerseyNumberRecognitionResult(Number: null, Confidence: 0f);
         }
 
+        // Copies only the track's small crop rectangle, not the whole captured frame (which ReadOnlySpan can't
+        // avoid heap-allocating a copy of, being a ref struct that can't flow through _pipeline's generic TInput
+        // tuple). This runs once per tracked player, per processed frame (spec's "once per processed frame") -
+        // with a full 1080p+ frame copied per call, per player, that added up to the single largest per-frame
+        // cost in the whole pipeline (see MainWindowViewModel.OnFrameArrived's per-track recognition loop),
+        // dwarfing the crop area a track's box actually needs.
+        var cropWidth = clamped.Right - clamped.Left;
+        var cropHeight = clamped.Bottom - clamped.Top;
+        var cropStride = cropWidth * 4;
+        var croppedPixels = new byte[cropStride * cropHeight];
+        for (var row = 0; row < cropHeight; row++)
+        {
+            bgra8Pixels.Slice(((clamped.Top + row) * stride) + (clamped.Left * 4), cropStride)
+                .CopyTo(croppedPixels.AsSpan(row * cropStride, cropStride));
+        }
+
         var (classId, confidence) = _pipeline.Run((
-            bgra8Pixels.ToArray(), width, height, stride,
-            clamped.Left, clamped.Top, clamped.Right - clamped.Left, clamped.Bottom - clamped.Top)).Output;
+            croppedPixels, cropWidth, cropHeight, cropStride,
+            0, 0, cropWidth, cropHeight)).Output;
 
         var number = classId == NoNumberClassId || confidence < _confidenceThreshold ? (int?)null : classId;
         return new JerseyNumberRecognitionResult(number, confidence);
