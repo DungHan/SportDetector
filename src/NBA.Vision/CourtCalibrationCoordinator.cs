@@ -160,6 +160,23 @@ public sealed class CourtCalibrationCoordinator(ISourceProfileStore profileStore
         }
     }
 
+    /// <summary>
+    /// Unconditionally discards any saved calibration for this source, regardless of sport - e.g. when
+    /// <see cref="SceneCutDetector"/> signals a hard scene/camera cut, meaning the homography this source had
+    /// calibrated no longer corresponds to whatever the camera is now looking at. The next frame with enough
+    /// confidently-detected keypoints recalibrates from scratch, since <see cref="TryCalibrateFromKeypoints"/>
+    /// only attempts that while no calibration is currently saved.
+    /// </summary>
+    public void Invalidate(string sourceKey)
+    {
+        var profile = profileStore.Load(sourceKey);
+        if (profile?.Calibration is not null)
+        {
+            profile.Calibration = null;
+            profileStore.Save(profile);
+        }
+    }
+
     private void Persist(string sourceKey, CalibrationData calibration)
     {
         var profile = profileStore.Load(sourceKey) ?? new SourceProfile { SourceKey = sourceKey };

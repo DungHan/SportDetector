@@ -54,6 +54,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private DateTimeOffset _lastKeypointCheckAt;
     private DateTimeOffset _lastSportClassificationCheckAt;
     private IReadOnlyList<DetectedKeypoint> _lastKeypoints = [];
+    private double[]? _lastSceneSignature;
     private IReadOnlyList<OnCourtObjectDetection> _lastOtherDetections = [];
     private NormalizedRect? _lastScoreboardObjectRegion;
     private readonly RelayCommand _reclassifyCommand;
@@ -168,6 +169,11 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         // No detected scoreboard region carries over from an unrelated source - falls back to the
         // default/manual region (ocr/scoreboard-recognition spec) until this source's own detections populate it.
         _lastScoreboardObjectRegion = null;
+
+        // An unrelated source's last frame has nothing to do with this one - without this reset, the first
+        // scene-cut check against a brand new source would compare it to a stale signature from whatever was
+        // playing before and could spuriously invalidate a calibration this source hasn't even computed yet.
+        _lastSceneSignature = null;
 
         // Track IDs are only meaningful within one continuous view of a source - an unrelated source switch
         // must not carry stale identities into a scene the tracker never saw (tracking/player-tracking spec).
@@ -317,6 +323,29 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             && frame.Timestamp - _lastKeypointCheckAt >= KeypointDetectionInterval)
         {
             _lastKeypointCheckAt = frame.Timestamp;
+
+            // A hard scene/camera cut (e.g. a highlight reel cutting to a different game/arena/camera angle
+            // within the same continuous capture source) means any calibration already saved for this source
+            // was fit against a court framing that no longer matches what's on screen - reusing it would keep
+            // projecting players to nonsensical minimap positions indefinitely, since GetValidCalibration below
+            // has no way to tell the homography is stale on its own. Checked on the same buffer and cadence as
+            // keypoint detection, since that's the only consumer that cares.
+            var sceneSignature = playbackCrop is { } sceneCrop
+                ? SceneCutDetector.ComputeGridSignature(sceneCrop.Pixels, sceneCrop.Width, sceneCrop.Height, sceneCrop.Stride)
+                : SceneCutDetector.ComputeGridSignature(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+            if (_lastSceneSignature is { } previousSceneSignature && SceneCutDetector.IsCut(previousSceneSignature, sceneSignature))
+            {
+                _calibrationCoordinator.Invalidate(sourceKeyForKeypoints);
+
+                // A cut is a new scene with unrelated players in it - carrying old track identities across it
+                // is exactly as wrong as carrying them across a source switch (see the same call and reasoning
+                // in SelectSourceAsync). Left un-reset, the old clip's tracks keep existing (motion prediction
+                // just fails to match anything in the new scene) alongside freshly spawned tracks for the new
+                // clip's actual players, so the minimap doubles up: real players plus their old clip's ghosts.
+                _playerTracker.Reset();
+            }
+            _lastSceneSignature = sceneSignature;
+
             try
             {
                 _lastKeypoints = playbackCrop is { } crop
@@ -331,16 +360,19 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                 _lastKeypoints = [];
             }
 
-            // Try to (re)calibrate from this same detection pass rather than running the detector again -
-            // only while no calibration is persisted yet for this source/sport; once one succeeds,
-            // GetValidCalibration below finds it and this is skipped on later checks.
-            if (_calibrationCoordinator.GetValidCalibration(sourceKeyForKeypoints, sport!.Value) is null)
+            // Broadcast camera work pans/zooms/tilts continuously *within* a single source - not just at hard
+            // cuts (SceneCutDetector only catches those) - so a homography computed once from this source's
+            // first framing goes stale as soon as the camera moves, well before anything looks like a "cut" to
+            // that detector. Re-attempted on every keypoint-detection tick, regardless of whether a calibration
+            // is already persisted, so the homography continuously tracks the live camera framing instead of
+            // freezing on the first one. TryCalibrateFromKeypoints only overwrites the persisted calibration on
+            // success (not enough/too-clustered keypoints this tick just fails without touching it), so a
+            // frame where the court is briefly out of view still keeps projecting off the last good fit rather
+            // than losing calibration entirely.
+            var calibrationAttempt = _calibrationCoordinator.TryCalibrateFromKeypoints(sourceKeyForKeypoints, sport!.Value, _lastKeypoints);
+            if (!calibrationAttempt.Success)
             {
-                var calibrationAttempt = _calibrationCoordinator.TryCalibrateFromKeypoints(sourceKeyForKeypoints, sport.Value, _lastKeypoints);
-                if (!calibrationAttempt.Success)
-                {
-                    Console.WriteLine($"[auto-calibrate] {calibrationAttempt.FailureReason}");
-                }
+                Console.WriteLine($"[auto-calibrate] {calibrationAttempt.FailureReason}");
             }
         }
 

@@ -38,7 +38,11 @@ public class MainWindowViewModelTests : IDisposable
 
         public float DetectionConfidenceThreshold { get; set; } = 0.5f;
 
-        public IReadOnlyList<DetectedKeypoint> Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride) => keypoints;
+        // Settable (not just the constructor value) so a test can simulate a broadcast camera pan/zoom
+        // changing what the detector sees between two keypoint-detection ticks of the same source.
+        public IReadOnlyList<DetectedKeypoint> Keypoints { get; set; } = keypoints;
+
+        public IReadOnlyList<DetectedKeypoint> Detect(ReadOnlySpan<byte> bgra8Pixels, int width, int height, int stride) => Keypoints;
     }
 
     private sealed class StubMultiClassObjectDetector : IMultiClassObjectDetector
@@ -132,14 +136,14 @@ public class MainWindowViewModelTests : IDisposable
         }
     }
 
-    private static CapturedFrame MakeFrame() => new()
+    private static CapturedFrame MakeFrame(DateTimeOffset? timestamp = null) => new()
     {
         Width = 4,
         Height = 4,
         Format = FramePixelFormat.Bgra8,
         Stride = 16,
         Pixels = new byte[16 * 4],
-        Timestamp = DateTimeOffset.UtcNow,
+        Timestamp = timestamp ?? DateTimeOffset.UtcNow,
     };
 
     private static ImagePoint ToImage(CourtPoint court) => new((court.X * 10) + 100, (court.Y * 10) + 50);
@@ -150,6 +154,21 @@ public class MainWindowViewModelTests : IDisposable
         new(ToImage(new CourtPoint(28.6512, 0)), "BaselineCorner_Right_Near"),
         new(ToImage(new CourtPoint(0, 15.24)), "BaselineCorner_Left_Far"),
         new(ToImage(new CourtPoint(28.6512, 15.24)), "BaselineCorner_Right_Far"),
+    ];
+
+    // A distinct image-space framing of the same landmarks - as if the broadcast camera panned/zoomed to a
+    // different part of the court between two keypoint-detection ticks of the same continuous source. A 5th
+    // landmark (CenterCourt) is included, unlike KnownCorrespondences' 4, because the automatic calibration
+    // path (CourtCalibrationCoordinator.MinimumAutoCalibratePoints) requires 5 - only ManualCalibrate accepts 4.
+    private static ImagePoint ToPannedImage(CourtPoint court) => new((court.X * 6) + 400, (court.Y * 6) + 300);
+
+    private static IReadOnlyList<LandmarkCorrespondence> PannedCorrespondences() =>
+    [
+        new(ToPannedImage(new CourtPoint(0, 0)), "BaselineCorner_Left_Near"),
+        new(ToPannedImage(new CourtPoint(28.6512, 0)), "BaselineCorner_Right_Near"),
+        new(ToPannedImage(new CourtPoint(0, 15.24)), "BaselineCorner_Left_Far"),
+        new(ToPannedImage(new CourtPoint(28.6512, 15.24)), "BaselineCorner_Right_Far"),
+        new(ToPannedImage(new CourtPoint(14.3256, 7.62)), "CenterCourt"),
     ];
 
     [AvaloniaFact]
@@ -279,6 +298,66 @@ public class MainWindowViewModelTests : IDisposable
         Assert.Equal("#1", playerMarker.Label);
         Assert.Equal(expectedFootPoint.X, playerMarker.X, precision: 6);
         Assert.Equal(expectedFootPoint.Y, playerMarker.Y, precision: 6);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_KeypointsShiftBetweenTicks_RecalibratesInsteadOfFreezingOnFirstFit()
+    {
+        // Broadcast camera work pans/zooms *within* one continuous source - not just at hard cuts - so a
+        // calibration fit from the first tick's framing must not keep being reused once the same landmarks
+        // show up at different image positions on a later tick (reported live: player markers kept tracking
+        // the pre-pan framing, then drifted to nonsense once the camera panned back). Two ticks with the same
+        // landmark names but different image-space positions must each drive the minimap off their own tick's
+        // homography, not the first one that happened to succeed.
+        var store = new FileSourceProfileStore(_directory);
+        var sourceKey = SourceIdentity.DeriveKey(SourceA);
+
+        // Also needs a 5th point (CenterCourt) - see PannedCorrespondences' doc comment on the auto-calibration minimum.
+        IReadOnlyList<LandmarkCorrespondence> initialCorrespondences =
+        [
+            .. KnownCorrespondences(),
+            new(ToImage(new CourtPoint(14.3256, 7.62)), "CenterCourt"),
+        ];
+
+        var frameSource = new FakeFrameSource();
+        var keypointDetector = new StubKeypointDetector(
+            initialCorrespondences.Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList());
+        var playerDetector = new StubMultiClassObjectDetector { Detections = [new PlayerDetection(1, 2, 3, 4, 0.876f)] };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store),
+            keypointDetector,
+            playerDetector,
+            new ByteTrackPlayerTracker(),
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
+        await Task.Delay(50);
+
+        var t0 = DateTimeOffset.UtcNow;
+        frameSource.PublishFrame(MakeFrame(t0));
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var firstMarker = Assert.Single(viewModel.Minimap.Markers, m => m.StyleKey == "player");
+
+        // Same landmarks, different image-space positions - as if the camera panned - published past
+        // KeypointDetectionInterval so the second tick's keypoint/calibration check actually runs.
+        keypointDetector.Keypoints = PannedCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
+        frameSource.PublishFrame(MakeFrame(t0 + TimeSpan.FromMilliseconds(200)));
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var pannedCalibration = new CourtCalibrationCoordinator(store).GetValidCalibration(sourceKey, SportType.Basketball);
+        Assert.NotNull(pannedCalibration);
+        var expectedPannedFootPoint = PointProjector.Project(pannedCalibration!, new ImagePoint(2, 4));
+        var secondMarker = Assert.Single(viewModel.Minimap.Markers, m => m.StyleKey == "player");
+
+        Assert.Equal(expectedPannedFootPoint.X, secondMarker.X, precision: 6);
+        Assert.Equal(expectedPannedFootPoint.Y, secondMarker.Y, precision: 6);
+        Assert.False(firstMarker.X == secondMarker.X && firstMarker.Y == secondMarker.Y);
     }
 
     [AvaloniaFact]

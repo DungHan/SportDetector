@@ -212,6 +212,32 @@ public class CourtCalibrationCoordinatorTests : IDisposable
         Assert.NotNull(store.Load("source-1")?.Calibration);
     }
 
+    [Fact]
+    public void Invalidate_DiscardsSavedCalibration_RegardlessOfSport()
+    {
+        // Unlike InvalidateIfStale, this must clear a saved calibration even though the sport hasn't changed -
+        // the scene-cut use case (see SceneCutDetector) invalidates a same-sport calibration that's simply
+        // fit against a camera framing that no longer matches what's on screen.
+        var store = new FileSourceProfileStore(_directory);
+        var coordinator = new CourtCalibrationCoordinator(store);
+        coordinator.ManualCalibrate("source-1", SportType.Basketball, KnownCorrespondences());
+
+        coordinator.Invalidate("source-1");
+
+        Assert.Null(store.Load("source-1")?.Calibration);
+    }
+
+    [Fact]
+    public void Invalidate_NoSavedCalibration_DoesNotThrowOrCreateAProfile()
+    {
+        var store = new FileSourceProfileStore(_directory);
+        var coordinator = new CourtCalibrationCoordinator(store);
+
+        coordinator.Invalidate("source-never-seen");
+
+        Assert.Null(store.Load("source-never-seen"));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory))
