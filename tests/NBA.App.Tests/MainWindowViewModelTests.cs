@@ -273,7 +273,10 @@ public class MainWindowViewModelTests : IDisposable
             new CourtCalibrationCoordinator(store),
             new StubKeypointDetector(keypoints),
             playerDetector,
-            new ByteTrackPlayerTracker(),
+            // minimumConsecutiveFrames: 1 - this test asserts a tracked player is visible from the very first
+            // published frame; it's about calibration/minimap wiring, not ByteTrackPlayerTracker's own
+            // confirmation-delay behavior (see add-bytetrack-confirmation-and-dedup/design.md).
+            new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1),
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),
@@ -330,7 +333,9 @@ public class MainWindowViewModelTests : IDisposable
             new CourtCalibrationCoordinator(store),
             keypointDetector,
             playerDetector,
-            new ByteTrackPlayerTracker(),
+            // minimumConsecutiveFrames: 1 - see the identical note above; this test is about recalibration
+            // across ticks, not tracker confirmation.
+            new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1),
             new NullScoreboardOcrEngine(),
             store,
             new NullJerseyNumberRecognizer(),

@@ -30,6 +30,18 @@ namespace NBA.Tracking;
 /// updated on every successful match - it tracks "what does this specific player tend to look like," not which
 /// team the player is on; the frame-level 2-means step exists only to produce this frame's two comparison
 /// points, not to permanently label any track.
+///
+/// Two further stabilizers (add-bytetrack-confirmation-and-dedup design.md) guard against a spawned track never
+/// having been a real player, and against two live tracks converging onto the same real player. A newly spawned
+/// track is an unconfirmed candidate until it has matched on <paramref name="minimumConsecutiveFrames"/>
+/// consecutive <see cref="Update"/> calls starting from its spawn; it is withheld from both methods' return
+/// value the whole time, and is discarded outright - not aged through <paramref name="maxLostFrames"/> - the
+/// moment it misses a single match before reaching that count, since the occlusion buffer exists to protect
+/// identity already proven real, not to give every misfire the same grace. Separately, after each
+/// <see cref="Update"/> call's association and spawning finish, every pair of live tracks (confirmed or not) is
+/// compared by IoU of their current reported boxes; a pair at or above <paramref name="duplicateIouThreshold"/>
+/// is collapsed to whichever track has matched more consecutive times (ties broken by keeping the lower,
+/// earlier-assigned, ID), releasing the loser's ID exactly like a normal termination.
 /// </summary>
 public sealed class ByteTrackPlayerTracker(
     float highConfidenceThreshold = 0.6f,
@@ -38,7 +50,9 @@ public sealed class ByteTrackPlayerTracker(
     int maxLostFrames = 20,
     int maxVisibleLostFrames = 5,
     double minCentroidSeparation = 30.0,
-    double colorEmaAlpha = 0.3) : IPlayerTracker
+    double colorEmaAlpha = 0.3,
+    int minimumConsecutiveFrames = 3,
+    double duplicateIouThreshold = 0.95) : IPlayerTracker
 {
     private readonly List<Track> _tracks = [];
     private int _nextTrackId = 1;
@@ -46,6 +60,11 @@ public sealed class ByteTrackPlayerTracker(
     public IReadOnlyList<TrackedPlayer> Update(IReadOnlyList<PlayerDetection> detections)
     {
         var originalTrackCount = _tracks.Count;
+
+        // A stable snapshot of pre-spawn track references, indexed identically to matchedTrackIndices below.
+        // Needed because SuppressDuplicateTracks (run later, before aging) can remove entries from _tracks,
+        // which would otherwise shift positions out from under a plain `_tracks[i]` lookup in the aging loop.
+        var originalTracks = new List<Track>(_tracks);
 
         // Advance every existing track's motion model by one frame-step before any association. Default to
         // reporting the predicted box; ApplyMatch overwrites LastBox for whichever tracks get matched below.
@@ -128,26 +147,78 @@ public sealed class ByteTrackPlayerTracker(
                 Color = detection.Color.HasValue
                     ? ((double)detection.Color.Value.R, (double)detection.Color.Value.G, (double)detection.Color.Value.B)
                     : null,
+                ConsecutiveMatches = 1,
             };
             track.Predictor.Correct(box);
             _tracks.Add(track);
         }
 
-        // Age out tracks unmatched in both rounds; terminate any that exceed the occlusion buffer. Only the
-        // tracks that existed before this frame's new-track spawns are eligible to be aged (a track just
-        // created above starts at LostFrames = 0).
+        // Collapse any tracks that now represent the same physical player (design.md's "duplicate-track
+        // suppression" decision) before aging - a track this pass removes should not also be aged below.
+        SuppressDuplicateTracks();
+
+        // Age out tracks unmatched in both rounds. Only the tracks that existed before this frame's new-track
+        // spawns are eligible here (a track just created above starts at ConsecutiveMatches = 1, LostFrames = 0).
+        // A confirmed track gets the normal occlusion-buffer countdown; an unconfirmed candidate is discarded
+        // immediately on its first miss instead - the occlusion buffer protects identity already proven real,
+        // not every spawn's first guess (design.md's "discard-on-first-miss" decision).
+        var toDiscard = new HashSet<Track>();
         for (var i = 0; i < originalTrackCount; i++)
         {
-            if (!matchedTrackIndices.Contains(i))
+            if (matchedTrackIndices.Contains(i))
             {
-                _tracks[i].LostFrames++;
+                continue;
+            }
+
+            var track = originalTracks[i];
+            if (track.ConsecutiveMatches < minimumConsecutiveFrames)
+            {
+                toDiscard.Add(track);
+            }
+            else
+            {
+                track.LostFrames++;
             }
         }
 
-        _tracks.RemoveAll(t => t.LostFrames >= maxLostFrames);
+        _tracks.RemoveAll(t => t.LostFrames >= maxLostFrames || toDiscard.Contains(t));
 
         return ToVisiblePlayers();
     }
+
+    /// <summary>
+    /// Compares every pair of live tracks (confirmed or unconfirmed candidate) by IoU of their current
+    /// <see cref="Track.LastBox"/> - a matched track's real detection box, or a coasting track's motion
+    /// prediction. A pair at or above <c>duplicateIouThreshold</c> is collapsed to whichever track has matched
+    /// more consecutive times (design.md's tie-break: on an exact tie, the lower - earlier-assigned - ID wins),
+    /// removing the other exactly like a normal termination (its ID is never reused).
+    /// </summary>
+    private void SuppressDuplicateTracks()
+    {
+        var toRemove = new HashSet<Track>();
+        for (var i = 0; i < _tracks.Count; i++)
+        {
+            for (var j = i + 1; j < _tracks.Count; j++)
+            {
+                if (GreedyIouMatcher.Iou(_tracks[i].LastBox, _tracks[j].LastBox) < duplicateIouThreshold)
+                {
+                    continue;
+                }
+
+                toRemove.Add(ChooseDuplicateLoser(_tracks[i], _tracks[j]));
+            }
+        }
+
+        if (toRemove.Count > 0)
+        {
+            _tracks.RemoveAll(toRemove.Contains);
+        }
+    }
+
+    private static Track ChooseDuplicateLoser(Track a, Track b) =>
+        a.ConsecutiveMatches != b.ConsecutiveMatches
+            ? (a.ConsecutiveMatches > b.ConsecutiveMatches ? b : a)
+            : (a.Id < b.Id ? b : a);
 
     /// <summary>
     /// Advances every live track's motion model by one frame-step and reports the resulting boxes, without
@@ -171,9 +242,9 @@ public sealed class ByteTrackPlayerTracker(
         }
     }
 
-    /// <summary>Every live track, excluding those coasting on pure motion prediction past <paramref name="maxVisibleLostFrames"/> - see the type-level doc comment.</summary>
+    /// <summary>Every confirmed live track, excluding unconfirmed candidates (still short of <paramref name="minimumConsecutiveFrames"/>) and those coasting on pure motion prediction past <paramref name="maxVisibleLostFrames"/> - see the type-level doc comment.</summary>
     private IReadOnlyList<TrackedPlayer> ToVisiblePlayers() => _tracks
-        .Where(t => t.LostFrames <= maxVisibleLostFrames)
+        .Where(t => t.ConsecutiveMatches >= minimumConsecutiveFrames && t.LostFrames <= maxVisibleLostFrames)
         .Select(t => new TrackedPlayer(t.Id, t.LastBox.Left, t.LastBox.Top, t.LastBox.Right, t.LastBox.Bottom, t.LastConfidence, t.LostFrames, ToByteColor(t.Color)))
         .ToList();
 
@@ -191,6 +262,7 @@ public sealed class ByteTrackPlayerTracker(
         track.LastBox = box;
         track.LastConfidence = detection.Confidence;
         track.LostFrames = 0;
+        track.ConsecutiveMatches++;
 
         if (detection.Color is (byte R, byte G, byte B) color)
         {
@@ -256,5 +328,8 @@ public sealed class ByteTrackPlayerTracker(
 
         /// <summary>Running EMA estimate of this track's own appearance color - seeded at spawn, updated on every successful match. Not which team the track is on (see the type-level doc comment).</summary>
         public (double R, double G, double B)? Color { get; set; }
+
+        /// <summary>Consecutive matched detection attempts since (and including) this track's spawn - a spawn counts as its own first match. Reaching <c>minimumConsecutiveFrames</c> confirms the track; missing a match before then discards it (see the type-level doc comment).</summary>
+        public int ConsecutiveMatches { get; set; }
     }
 }

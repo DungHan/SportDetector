@@ -64,7 +64,8 @@ public static class GreedyIouMatcher
         return new GreedyMatchResult(matches, unmatchedPredicted, unmatchedDetections);
     }
 
-    private static double Iou(
+    /// <summary>Exposed beyond this matcher (e.g. <c>ByteTrackPlayerTracker</c>'s duplicate-track suppression pass) so overlap math has one source of truth instead of a second copy.</summary>
+    internal static double Iou(
         (double Left, double Top, double Right, double Bottom) a,
         (double Left, double Top, double Right, double Bottom) b)
     {

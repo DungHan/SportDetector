@@ -13,7 +13,7 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_SmoothlyMovingHighConfidenceDetection_KeepsSameTrackId()
     {
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         var firstId = Assert.Single(first).TrackId;
@@ -31,7 +31,8 @@ public class ByteTrackPlayerTrackerTests
     {
         // highConfidenceThreshold defaults to 0.6f - 0.2f is "low" but still above whatever IPlayerDetector's
         // own threshold would have been (this tracker doesn't re-apply that threshold, per design.md).
-        var tracker = new ByteTrackPlayerTracker();
+        // minimumConsecutiveFrames: 1 - this test is about round-2 low-confidence recovery, not confirmation.
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         var trackId = Assert.Single(first).TrackId;
@@ -59,7 +60,7 @@ public class ByteTrackPlayerTrackerTests
     public void Update_TrackWithNoMatch_SurvivesUntilOcclusionBufferThenTerminates()
     {
         const int maxLostFrames = 3;
-        var tracker = new ByteTrackPlayerTracker(maxLostFrames: maxLostFrames);
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: maxLostFrames, minimumConsecutiveFrames: 1);
 
         var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         var trackId = Assert.Single(first).TrackId;
@@ -79,7 +80,7 @@ public class ByteTrackPlayerTrackerTests
     public void Update_UnmatchedPastVisibilityLimit_WithheldFromResultButNotTerminated()
     {
         const int maxVisibleLostFrames = 2;
-        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: maxVisibleLostFrames);
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: maxVisibleLostFrames, minimumConsecutiveFrames: 1);
 
         var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         var trackId = Assert.Single(first).TrackId;
@@ -108,7 +109,7 @@ public class ByteTrackPlayerTrackerTests
         // A consumer that needs to distinguish "this frame's real detection" from "still shown but coasting on
         // motion prediction" (e.g. the minimap capping how many players it shows at once) reads this field -
         // it must track the same occlusion-buffer state Update_UnmatchedPastVisibilityLimit_... exercises above.
-        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: 2);
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: 2, minimumConsecutiveFrames: 1);
 
         var matched = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         Assert.Equal(0, Assert.Single(matched).FramesSinceMatch);
@@ -126,7 +127,10 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void PredictOnly_TrackWithheldAfterMissedUpdates_StaysWithheldDuringPrediction()
     {
-        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: 1);
+        // minimumConsecutiveFrames: 1 - without this, the spawned track would be discarded outright on its
+        // first miss (before ever reaching the default confirmation count), which would make this test pass
+        // for the wrong reason (no track at all) instead of testing the maxVisibleLostFrames withholding it names.
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: 1, minimumConsecutiveFrames: 1);
 
         tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         tracker.Update([]); // LostFrames: 1 - still within maxVisibleLostFrames
@@ -140,7 +144,9 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_UnmatchedHighConfidenceDetection_CreatesNewTrackWithFreshId()
     {
-        var tracker = new ByteTrackPlayerTracker();
+        // minimumConsecutiveFrames: 1 - this test is about round-1 spawn behavior in isolation, not confirmation
+        // (see add-bytetrack-confirmation-and-dedup/design.md's decision note on this exact test).
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         var firstId = Assert.Single(first).TrackId;
@@ -156,7 +162,7 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_TerminatedTrackId_NeverReassignedToLaterDetectionAtSamePosition()
     {
-        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 1);
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 1, minimumConsecutiveFrames: 1);
 
         var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         var terminatedId = Assert.Single(first).TrackId;
@@ -174,7 +180,7 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void PredictOnly_LiveTrack_MovesTowardPredictedPositionKeepingSameId()
     {
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         var trackId = Assert.Single(first).TrackId;
@@ -194,7 +200,7 @@ public class ByteTrackPlayerTrackerTests
     public void PredictOnly_RepeatedlyBeyondOcclusionBuffer_DoesNotTerminateTrack()
     {
         const int maxLostFrames = 3;
-        var tracker = new ByteTrackPlayerTracker(maxLostFrames: maxLostFrames);
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: maxLostFrames, minimumConsecutiveFrames: 1);
 
         var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         var trackId = Assert.Single(first).TrackId;
@@ -221,7 +227,7 @@ public class ByteTrackPlayerTrackerTests
     public void Update_UnmatchedCallsStillTerminateAtOcclusionBuffer_EvenWithInterleavedPredictOnlyCalls()
     {
         const int maxLostFrames = 3;
-        var tracker = new ByteTrackPlayerTracker(maxLostFrames: maxLostFrames);
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: maxLostFrames, minimumConsecutiveFrames: 1);
 
         var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         var trackId = Assert.Single(first).TrackId;
@@ -251,7 +257,7 @@ public class ByteTrackPlayerTrackerTests
         // TrackedPlayer.Color is the display-facing exposure of the tracker's internal color-veto estimate
         // (see MinimapView.axaml.cs's per-player marker fill) - this pins that it actually reaches the public
         // result, not just the private Track used for veto matching.
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var spawned = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
         Assert.Equal(Red, Assert.Single(spawned).Color);
@@ -260,7 +266,7 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_DetectionWithNoSampledColor_LeavesTrackedPlayerColorNull()
     {
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var spawned = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
         Assert.Null(Assert.Single(spawned).Color);
@@ -269,7 +275,7 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_ColorMismatchedPair_NotAssociatedDespiteIouOverlap()
     {
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         // Two well-separated tracks, seeded with distinct colors.
         var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red), Box(500, 500, 510, 510, 0.9f, Blue)]);
@@ -294,7 +300,7 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_ColorMatchedPair_AssociatesNormally()
     {
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red), Box(500, 500, 510, 510, 0.9f, Blue)]);
         var trackAId = seeded.Single(t => t.Left < 100).TrackId;
@@ -315,7 +321,7 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_FewerThanTwoColoredDetectionsThisFrame_VetoSkipped_IouOnlyAssociationApplies()
     {
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
         var trackAId = Assert.Single(seeded).TrackId;
@@ -332,7 +338,7 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_CentroidsTooCloseTogether_VetoSkipped_IouOnlyAssociationApplies()
     {
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
         var trackAId = Assert.Single(seeded).TrackId;
@@ -351,7 +357,7 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_NewlySpawnedTrackColor_IsSeededFromSpawningDetection_AndLaterInfluencesTheVeto()
     {
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         // An unrelated track, spatially far from everything below for the rest of this test - its own
         // eventual fate (matched, unmatched, terminated) doesn't matter, since it never has IoU overlap with
@@ -384,7 +390,7 @@ public class ByteTrackPlayerTrackerTests
         // Convergence is observed indirectly through its effect on the veto rather than by reading
         // TrackedPlayer.Color directly - exact EMA rounding at each step would make a direct assertion brittle,
         // whereas "does the veto now treat this track as Blue" is the behavior that actually matters.
-        var tracker = new ByteTrackPlayerTracker();
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
 
         var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
         var trackId = Assert.Single(seeded).TrackId;
@@ -409,5 +415,144 @@ public class ByteTrackPlayerTrackerTests
 
         var track = Assert.Single(result, t => t.TrackId == trackId);
         Assert.Equal(0, track.Left); // stayed at its own predicted position - the Red detection was vetoed, not matched
+    }
+
+    [Fact]
+    public void Update_CandidateMatchesThroughConfirmationCount_BecomesVisibleThenStaysVisible()
+    {
+        const int minimumConsecutiveFrames = 3;
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: minimumConsecutiveFrames);
+
+        Assert.Empty(tracker.Update([Box(0, 0, 10, 10, 0.9f)])); // attempt 1 (spawn) - ConsecutiveMatches: 1
+        Assert.Empty(tracker.Update([Box(1, 0, 11, 10, 0.9f)])); // attempt 2 - ConsecutiveMatches: 2
+
+        var confirmed = tracker.Update([Box(2, 0, 12, 10, 0.9f)]); // attempt 3 - ConsecutiveMatches: 3, confirmed
+        var confirmedId = Assert.Single(confirmed).TrackId;
+
+        var next = tracker.Update([Box(3, 0, 13, 10, 0.9f)]);
+        Assert.Equal(confirmedId, Assert.Single(next).TrackId);
+    }
+
+    [Fact]
+    public void Update_CandidateMissesBeforeConfirmation_DiscardedOutrightNotAgedThroughOcclusionBuffer()
+    {
+        const int minimumConsecutiveFrames = 3;
+        // maxLostFrames: 20 - if the candidate were aged like a confirmed track instead of discarded outright,
+        // it would easily survive a single miss well within this buffer.
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: minimumConsecutiveFrames, maxLostFrames: 20);
+
+        Assert.Empty(tracker.Update([Box(0, 0, 10, 10, 0.9f)])); // spawn - ConsecutiveMatches: 1
+
+        Assert.Empty(tracker.Update([])); // misses immediately - discarded outright, not aged
+
+        // A detection reappears at the exact same position. If the original candidate had secretly survived
+        // with any retained progress, fewer than a full fresh minimumConsecutiveFrames streak would be needed
+        // here to confirm; instead a brand-new candidate must start over from ConsecutiveMatches: 1.
+        for (var i = 0; i < minimumConsecutiveFrames - 1; i++)
+        {
+            Assert.Empty(tracker.Update([Box(0, 0, 10, 10, 0.9f)]));
+        }
+
+        var confirmed = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        Assert.Single(confirmed);
+    }
+
+    [Fact]
+    public void Update_MinimumConsecutiveFramesOfOne_ReproducesImmediateVisibility()
+    {
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
+
+        var result = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void Update_TwoTracksConvergeOnSamePosition_ShorterHistoryTrackRemoved()
+    {
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1, duplicateIouThreshold: 0.95);
+
+        // Track A: spawn and rack up two more matches at a fixed, stationary position, seeded Red.
+        var spawned = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
+        var aId = Assert.Single(spawned).TrackId;
+        tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
+        tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]); // A.ConsecutiveMatches: 3, stationary at (0,0,10,10)
+
+        // This frame: a Blue detection lands exactly on A's position (perfect IoU), plus a far-away Red
+        // detection to give this frame a valid two-color split. The color veto blocks A from absorbing the
+        // mismatched-color detection despite the IoU overlap, so it spawns as its own new track - directly on
+        // top of A's own (unmatched, coasting) position.
+        var withDuplicate = tracker.Update([Box(0, 0, 10, 10, 0.9f, Blue), Box(500, 500, 510, 510, 0.9f, Red)]);
+
+        // Before duplicate suppression this would be 3 live tracks (A coasting, the new spawn on top of it, and
+        // the far-away Red spawn). Suppression must collapse the pair at (0,0,10,10) down to whichever has the
+        // longer history (A, ConsecutiveMatches: 3 vs the new spawn's 1), leaving 2.
+        Assert.Equal(2, withDuplicate.Count);
+        Assert.Contains(withDuplicate, t => t.TrackId == aId && t.Left == 0);
+        Assert.DoesNotContain(withDuplicate, t => t.Left == 0 && t.TrackId != aId);
+        Assert.Contains(withDuplicate, t => t.Left == 500);
+    }
+
+    [Fact]
+    public void Update_TwoSameAttemptSpawnsOverlapAboveThreshold_LowerIdSurvivesDeterministically()
+    {
+        for (var run = 0; run < 5; run++)
+        {
+            var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
+
+            // Two identical-box detections, no pre-existing tracks - both are unmatched (nothing to match
+            // against yet) and both spawn in the same attempt with equal ConsecutiveMatches (1), so the
+            // duplicate tie-break must fall back to the lower, earlier-assigned track ID.
+            var result = tracker.Update([Box(0, 0, 10, 10, 0.9f), Box(0, 0, 10, 10, 0.9f)]);
+
+            var survivor = Assert.Single(result);
+            Assert.Equal(1, survivor.TrackId);
+        }
+    }
+
+    [Fact]
+    public void Update_UnconfirmedCandidateDuplicatesEstablishedTrack_CandidateDiscardedEstablishedTrackUnaffected()
+    {
+        var tracker = new ByteTrackPlayerTracker(); // real defaults: minimumConsecutiveFrames 3, duplicateIouThreshold 0.95
+
+        // Confirm track A across 3 matching attempts at a fixed position, seeded Red.
+        Assert.Empty(tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]));
+        Assert.Empty(tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]));
+        var confirmed = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
+        var aId = Assert.Single(confirmed).TrackId;
+
+        // A mismatched-color (Blue) detection lands exactly on A's position - the color veto blocks it from
+        // matching A despite perfect IoU, so it spawns as its own new, unconfirmed candidate directly on top of
+        // A. A goes unmatched this attempt too (already confirmed, so it just starts coasting).
+        var withDuplicate = tracker.Update([Box(0, 0, 10, 10, 0.9f, Blue), Box(500, 500, 510, 510, 0.9f, Red)]);
+
+        // The candidate never reaches confirmation - duplicate suppression removes it (fewer ConsecutiveMatches
+        // than the established track) before it could ever be reported. A remains visible (still confirmed,
+        // just coasting); the unrelated far-away detection spawns its own separate candidate but isn't visible
+        // yet either (its own first attempt, still short of minimumConsecutiveFrames) - so only A is reported.
+        var track = Assert.Single(withDuplicate);
+        Assert.Equal(aId, track.TrackId);
+        Assert.Equal(0, track.Left);
+
+        // Confirm the candidate is truly gone, not just invisible this frame: across several more attempts, no
+        // second track ever appears at position 0.
+        for (var i = 0; i < 3; i++)
+        {
+            var next = tracker.Update([Box(500 + i, 500, 510 + i, 510, 0.9f, Red)]);
+            Assert.DoesNotContain(next, t => t.Left == 0 && t.TrackId != aId);
+        }
+    }
+
+    [Fact]
+    public void Update_TwoTracksWithOrdinarySpacingBelowDuplicateThreshold_BothSurvive()
+    {
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1, duplicateIouThreshold: 0.95);
+
+        // Two adjacent, partially overlapping detections spawned in the same attempt - IoU between them (0.25)
+        // is well under the duplicate threshold (near-total overlap), so both must survive as distinct tracks,
+        // the same way add-team-color-track-gating's crossing-players tests keep well-separated tracks distinct.
+        var result = tracker.Update([Box(0, 0, 10, 10, 0.9f), Box(6, 0, 16, 10, 0.9f)]);
+
+        Assert.Equal(2, result.Count);
     }
 }
