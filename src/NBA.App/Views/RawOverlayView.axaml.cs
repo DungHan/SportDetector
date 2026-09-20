@@ -27,6 +27,11 @@ public partial class RawOverlayView : UserControl
         ["Team Name"] = new SolidColorBrush(Color.Parse("#1E90FF")),
         ["Team Points"] = new SolidColorBrush(Color.Parse("#FF69B4")),
         ["Time Remaining"] = new SolidColorBrush(Color.Parse("#40E0D0")),
+
+        // Not a detection class - marks the auto-detected "gameplay vs. page chrome" crop region that
+        // player/keypoint detection actually runs against (see MainWindowViewModel's playbackRegionAnnotations).
+        // White so it reads unmistakably as "this is the crop boundary", not another tracked object.
+        ["playbackRegion"] = Brushes.White,
     };
 
     private static readonly IBrush FallbackBoxBrush = new SolidColorBrush(Color.Parse("#FF4040"));
@@ -117,12 +122,14 @@ public partial class RawOverlayView : UserControl
             var stroke = visual.StyleKey is { } styleKey && ClassBoxBrushes.TryGetValue(styleKey, out var classBrush)
                 ? classBrush
                 : FallbackBoxBrush;
+            var isPlaybackRegion = visual.StyleKey == "playbackRegion";
             var rectangle = new Rectangle
             {
                 Width = Math.Abs(width),
                 Height = Math.Abs(height),
                 Stroke = stroke,
-                StrokeThickness = 2,
+                StrokeThickness = isPlaybackRegion ? 3 : 2,
+                StrokeDashArray = isPlaybackRegion ? [6, 4] : null,
             };
             Canvas.SetLeft(rectangle, width < 0 ? visual.X + width : visual.X);
             Canvas.SetTop(rectangle, height < 0 ? visual.Y + height : visual.Y);

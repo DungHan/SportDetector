@@ -288,6 +288,21 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             _currentPlaybackRegion = _playbackRegionCoordinator.Accumulate(accumulatingSourceKey, frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
         }
 
+        // Drawn on every branch below (including the early-return ones) so the detected playback region is
+        // visible on the raw overlay as soon as it's found, regardless of sport classification/calibration state.
+        var playbackRegionAnnotations = _currentPlaybackRegion is { } currentRegion
+            ? new[]
+            {
+                OverlayAnnotation.ForBox(
+                    currentRegion.X * frame.Width,
+                    currentRegion.Y * frame.Height,
+                    (currentRegion.X + currentRegion.Width) * frame.Width,
+                    (currentRegion.Y + currentRegion.Height) * frame.Height,
+                    "playback region",
+                    "playbackRegion"),
+            }
+            : [];
+
         // Cropping detector input to the playback region (once known) keeps player/keypoint detection from
         // running inference over that surrounding chrome. Detector output comes back in the crop's own pixel
         // space, so results are offset back into full-frame coordinates immediately below (see OffsetToFullFrame),
@@ -320,7 +335,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                 Dispatcher.UIThread.Post(() =>
                 {
                     RawOverlay.CurrentFrame = bitmap;
-                    RawOverlay.SetAnnotations([]);
+                    RawOverlay.SetAnnotations(playbackRegionAnnotations);
                 });
                 return;
             }
@@ -406,7 +421,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             Dispatcher.UIThread.Post(() =>
             {
                 RawOverlay.CurrentFrame = bitmap;
-                RawOverlay.SetAnnotations([]);
+                RawOverlay.SetAnnotations(playbackRegionAnnotations);
             });
             return;
         }
@@ -525,7 +540,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             Dispatcher.UIThread.Post(() =>
             {
                 RawOverlay.CurrentFrame = bitmap;
-                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations));
+                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations).Concat(playbackRegionAnnotations));
             });
             return;
         }
@@ -573,7 +588,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             Dispatcher.UIThread.Post(() =>
             {
                 RawOverlay.CurrentFrame = bitmap;
-                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations));
+                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations).Concat(playbackRegionAnnotations));
             });
             return;
         }
@@ -616,7 +631,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         Dispatcher.UIThread.Post(() =>
         {
             RawOverlay.CurrentFrame = bitmap;
-            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypointAnnotations).Concat(otherAnnotations));
+            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypointAnnotations).Concat(otherAnnotations).Concat(playbackRegionAnnotations));
 
             Minimap.HasValidCalibration = calibration is not null;
             if (currentGeometry is not null)
