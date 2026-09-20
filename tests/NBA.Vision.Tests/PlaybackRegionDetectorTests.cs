@@ -83,31 +83,41 @@ public class PlaybackRegionDetectorTests
     }
 
     [Fact]
-    public void TryGetRegion_BridgesSmallQuietGapBetweenTwoMovingRegions_ReturnsUnionBounds()
+    public void TryGetRegion_QuietPatchInsideMovingRegion_DoesNotShrinkBounds()
     {
         var detector = new PlaybackRegionDetector(gridWidth: 32, gridHeight: 18, minimumFrames: 10);
 
-        // Two flickering blocks separated by a 2-cell (20px) quiet gap, small enough to represent an on-court
-        // subject that's briefly still rather than a genuinely separate motion source - see
-        // PlaybackRegionDetector.ConnectivityBridgeRadius's doc comment.
-        AccumulateFlickeringRegion(detector, frameCount: 20, (100, 50, 60, 60), (180, 50, 60, 60));
+        for (var i = 0; i < 20; i++)
+        {
+            var value = (byte)(i % 2 == 0 ? 0 : 255);
+
+            // Main 10x6-cell region flickers every frame, except a 2x2-cell patch painted a fixed value on top
+            // each frame - e.g. an on-court player who's momentarily still - so that patch alone contributes no
+            // frame-to-frame energy. Its row/column still get energy from the rest of the region flickering
+            // through them, so the projection-based bounds shouldn't shrink or fracture around it.
+            var frame = CreateFrame(
+                backgroundValue: 20,
+                (100, 50, 100, 60, value),
+                (140, 70, 20, 20, 128));
+            detector.Accumulate(frame, Width, Height, Stride);
+        }
 
         Assert.True(detector.TryGetRegion(out var region));
         Assert.Equal(100.0 / Width, region.X, precision: 3);
         Assert.Equal(50.0 / Height, region.Y, precision: 3);
-        Assert.Equal(140.0 / Width, region.Width, precision: 3);
+        Assert.Equal(100.0 / Width, region.Width, precision: 3);
         Assert.Equal(60.0 / Height, region.Height, precision: 3);
     }
 
     [Fact]
-    public void TryGetRegion_DoesNotBridgeSmallNearbyNoiseComponent_KeepsOnlyMainRegion()
+    public void TryGetRegion_ShorterSeparateActiveRun_LosesToLongerMainRun()
     {
         var detector = new PlaybackRegionDetector(gridWidth: 32, gridHeight: 18, minimumFrames: 10);
 
-        // Main region: 10x6 cells. A small (2x1-cell) flickering patch sits just 1 cell away, within bridging
-        // distance - but below the minimum size to count as a real disconnected chunk of the game (as opposed
-        // to page noise like a ticking counter or hover animation), so it must not pull the box wider.
-        AccumulateFlickeringRegion(detector, frameCount: 20, (100, 50, 100, 60), (210, 50, 20, 10));
+        // Main region: 10x6 cells. A separate flickering block (3x3 cells) sits well apart from it - large
+        // enough to individually clear the activity threshold on its own, but its run is shorter than the main
+        // region's on both axes, so the longest-run selection keeps only the main region's bounds.
+        AccumulateFlickeringRegion(detector, frameCount: 20, (100, 50, 100, 60), (250, 120, 30, 30));
 
         Assert.True(detector.TryGetRegion(out var region));
         Assert.Equal(100.0 / Width, region.X, precision: 3);
