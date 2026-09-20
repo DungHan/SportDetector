@@ -227,6 +227,25 @@ public class OnnxMultiClassObjectDetectorTests
     }
 
     [Fact]
+    public void Detect_NullPlayerClassId_RoutesEveryChannelToOthers_NeverToPlayers()
+    {
+        // A model with no Player channel at all (e.g. a single-class ball-only export) - avgR = 1.0 qualifies
+        // box0 on channel 4, and box3's constant 0.99 always qualifies on channel 5. With playerClassId: null
+        // neither channel is ever "the player channel", so both must land on Others, never Players - unlike
+        // Detect_DetectionsOnMultipleChannels_SplitCorrectlyBetweenPlayersAndOthers below, which uses the same
+        // fixture input but the default (non-null) playerClassId.
+        using var detector = new OnnxMultiClassObjectDetector(FixturePath, TwoClassNames, inputSize: 4, inputName: "input", playerClassId: null);
+        var pixels = SolidBgra8(4, 4, b: 0, g: 0, r: 255);
+
+        var result = detector.Detect(pixels, width: 4, height: 4, stride: 4 * 4);
+
+        Assert.Empty(result.Players);
+        Assert.Equal(2, result.Others.Count);
+        Assert.Contains(result.Others, o => o.ClassName == "Player");
+        Assert.Contains(result.Others, o => o.ClassName == "Other");
+    }
+
+    [Fact]
     public void Detect_DetectionsOnMultipleChannels_SplitCorrectlyBetweenPlayersAndOthers()
     {
         // avgB = 1.0 qualifies box2 on the player channel; box3's constant 0.99 always qualifies on the other

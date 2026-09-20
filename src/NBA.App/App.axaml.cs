@@ -34,6 +34,7 @@ public partial class App : Application
             var sportPromptsPath = Path.Combine(GetModelsDirectory(), modelsConfig.SportClassifier.PromptsPath);
             var keypointModelPath = Path.Combine(GetModelsDirectory(), modelsConfig.CourtKeypoints.ModelPath);
             var playerDetectionModelPath = Path.Combine(GetModelsDirectory(), modelsConfig.PlayerDetection.ModelPath);
+            var ballDetectionModelPath = Path.Combine(GetModelsDirectory(), modelsConfig.BallDetection.ModelPath);
             var jerseyNumberModelPath = Path.Combine(GetModelsDirectory(), modelsConfig.JerseyNumber.ModelPath);
 
             // No trained keypoint model is shipped in this change yet (see design.md's risk entries) - fall
@@ -67,8 +68,8 @@ public partial class App : Application
                     keypointModelPath,
                     BasketballGeometryDefinition(),
                     // Values come from models/models.json (see ModelsConfig) - the active model
-                    // (models/README.md's "basketball_nba_court-keypoints_1280_yolov8s-pose.onnx" section) is a
-                    // 1280x1280 export, so the library's 640 default would letterbox/resize to the wrong size
+                    // (models/README.md's "basketball_nba_court-keypoints_960_yolov8m-pose.onnx" section) is a
+                    // 960x960 export, so the library's 640 default would letterbox/resize to the wrong size
                     // against this file, scrambling every decoded keypoint's pixel position.
                     inputSize: modelsConfig.CourtKeypoints.InputSize,
                     keypointConfidenceThreshold: modelsConfig.CourtKeypoints.KeypointConfidenceThreshold,
@@ -82,12 +83,12 @@ public partial class App : Application
                     playerDetectionModelPath,
                     // Values come from models/models.json (see ModelsConfig), defaulting to this model's own
                     // embedded class-name metadata (models/README.md's
-                    // "basketball_nba_player-detection_1280_yolov8m.onnx" section, verified via the file's own
+                    // "basketball_nba_player-detection_960_yolov8m.onnx" section, verified via the file's own
                     // onnx.metadata_props `names` key) - the order here must match that metadata's index order
                     // exactly, since classIndex 4+i's channel is decoded positionally, not by name.
                     classNames: modelsConfig.PlayerDetection.ClassNames,
                     // Defaults to this specific model's export size (models/README.md's
-                    // "basketball_nba_player-detection_1280_yolov8m.onnx" section: verified imgsz=[1280,1280]
+                    // "basketball_nba_player-detection_960_yolov8m.onnx" section: verified imgsz=[960,960]
                     // from the file's own embedded metadata) - the library
                     // default of 640 assumes a stock yolov8n-shaped export and would letterbox/resize to the
                     // wrong size against this model, scrambling every box's decoded coordinates.
@@ -102,8 +103,9 @@ public partial class App : Application
                     confidenceThreshold: modelsConfig.PlayerDetection.ConfidenceThreshold,
                     iouThreshold: modelsConfig.PlayerDetection.IouThreshold,
                     // Defaults to this model's own embedded class-name metadata (models/README.md) confirming
-                    // `Player` is class index 3, distinct from `Ref` (4) and the other on-court object classes -
-                    // the library default of 0 would silently read the "Ball" channel instead.
+                    // `Player` is class index 0, distinct from `Ref` (1) - this export has no other on-court
+                    // object classes (Ball/Hoop/scoreboard elements are no longer part of this model at all,
+                    // see ballDetectionModelPath below and BallDetectionConfig).
                     playerClassId: modelsConfig.PlayerDetection.PlayerClassId,
                     // TEMPORARY diagnostic (remove once real-world confidence is calibrated): logs the max
                     // raw player-confidence seen across all candidates each frame, and how many passed the
@@ -111,6 +113,27 @@ public partial class App : Application
                     // threshold" vs "always ~0, likely a wiring bug" without guessing.
                     onDiagnostics: (maxConfidence, aboveThresholdCount) =>
                         Console.WriteLine($"[player-detect] maxConfidence={maxConfidence:P1} aboveThreshold={aboveThresholdCount}"))
+                : new NullMultiClassObjectDetector();
+
+            // A separate trained model and a separate inference pass from multiClassObjectDetector above -
+            // the player-detection export above no longer includes a "Ball" class (it only ever has
+            // Player/Ref), so ball detection needs its own model and its own Detect(...) call.
+            // MainWindowViewModel merges this instance's Others list with multiClassObjectDetector's Others
+            // list every detection frame rather than picking one or the other.
+            IMultiClassObjectDetector ballDetector = File.Exists(ballDetectionModelPath)
+                ? new OnnxMultiClassObjectDetector(
+                    ballDetectionModelPath,
+                    // This export's only class (models/README.md's
+                    // "basketball_nba_ball-detection_960_yolov8m.onnx" section) - named "Ball" here (rather
+                    // than the model's own embedded "item" label) so it round-trips through
+                    // RawOverlayView.ClassBoxBrushes' existing "Ball" color entry unchanged.
+                    classNames: modelsConfig.BallDetection.ClassNames,
+                    inputSize: modelsConfig.BallDetection.InputSize,
+                    confidenceThreshold: modelsConfig.BallDetection.ConfidenceThreshold,
+                    iouThreshold: modelsConfig.BallDetection.IouThreshold,
+                    // This model has no Player channel at all - every detection it produces belongs on the
+                    // Others list, never fed into PlayerDetection/ByteTrackPlayerTracker.
+                    playerClassId: null)
                 : new NullMultiClassObjectDetector();
 
             // No missing-model degraded path needed here (unlike the detectors above) - ByteTrackPlayerTracker
@@ -158,6 +181,7 @@ public partial class App : Application
                 jerseyNumberRecognizer,
                 jerseyNumberVoteAggregator,
                 new PlaybackRegionCoordinator(profileStore),
+                ballDetector: ballDetector,
                 // Confirmed (by testing detectionIntervalFrames: 1) that PredictOnly()'s pure motion
                 // extrapolation between detections was the main source of "flying" boxes - every-frame
                 // detection fixed it but was too expensive (visible lag). Settling on every-2nd-frame as a

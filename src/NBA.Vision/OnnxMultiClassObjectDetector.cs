@@ -9,12 +9,16 @@ namespace NBA.Vision;
 /// input "images" of shape [1, 3, 640, 640], output "output0" of shape [1, 4 + numClasses, numCandidates] - 4
 /// box channels (cx, cy, w, h, in the model's input-pixel coordinate space, i.e. [0, inputSize]) followed by
 /// one confidence channel per class, indexed by class - not a combined confidence+classId pair). Every class
-/// channel is decoded from the one inference pass (see `vision/on-court-object-detection`'s "one inference
-/// pass" requirement) - <see cref="playerClassId"/>'s channel is routed into <see cref="PlayerDetection"/>
-/// (including its upper-body mean-color sampling, a cheap appearance signal consumed by
-/// `tracking/player-tracking`'s team-color veto), every other channel into <see cref="OnCourtObjectDetection"/>.
-/// Non-max suppression always runs in postprocessing, independently per class, since this raw export shape has
-/// no NMS baked in and one class's boxes must never suppress another's.
+/// channel is decoded from the one inference pass this instance wraps - a `playerClassId` channel is routed
+/// into <see cref="PlayerDetection"/> (including its upper-body mean-color sampling, a cheap appearance signal
+/// consumed by `tracking/player-tracking`'s team-color veto), every other channel into
+/// <see cref="OnCourtObjectDetection"/>. `App.axaml.cs` wires up two separate instances of this class, one per
+/// trained model (player+referee, ball-only) - a single model no longer covers every on-court/broadcast-overlay
+/// class, so the composition root merges each instance's own <see cref="MultiClassDetectionResult"/>. A
+/// `playerClassId` of <see langword="null"/> means this particular model has no Player channel at all - every
+/// class it decodes lands on <see cref="MultiClassDetectionResult.Others"/> instead, as is the case for a
+/// single-class ball-only export. Non-max suppression always runs in postprocessing, independently per class,
+/// since this raw export shape has no NMS baked in and one class's boxes must never suppress another's.
 /// </summary>
 public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, IDisposable
 {
@@ -30,7 +34,7 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
         int inputSize = 640,
         float confidenceThreshold = 0.5f,
         float iouThreshold = 0.45f,
-        int playerClassId = 0,
+        int? playerClassId = 0,
         string inputName = "images",
         Action<float, int>? onDiagnostics = null)
     {
@@ -52,8 +56,10 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
                 // Guard against a misconfigured/mismatched class index or class-name list (e.g. a model swap
                 // that changes the class count) reading past the tensor's actual channel range - fail to zero
                 // detections, the same "no model/no class to read" degraded shape the rest of this pipeline
-                // already uses, rather than an IndexOutOfRangeException.
-                if (playerClassId < 0 || playerClassId >= classCount || classNames.Count != classCount)
+                // already uses, rather than an IndexOutOfRangeException. A null playerClassId is not a
+                // misconfiguration - it means this model has no Player channel at all (e.g. a single-class
+                // ball-only export), so every class it decodes belongs on the Others list.
+                if (classNames.Count != classCount || (playerClassId is { } configuredPlayerClassId && (configuredPlayerClassId < 0 || configuredPlayerClassId >= classCount)))
                 {
                     onDiagnostics?.Invoke(0f, 0);
                     return ([], []);
@@ -74,12 +80,16 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
                 {
                     var channel = 4 + classIndex;
                     var isPlayerChannel = classIndex == playerClassId;
+                    // With no Player channel configured at all, diagnostics track across every class instead
+                    // of a specific one - still meaningful here since onDiagnostics is only ever wired up to
+                    // log "how strong/how many did this model see", not specifically about Player detections.
+                    var isDiagnosticsChannel = playerClassId is null || isPlayerChannel;
 
                     for (var i = 0; i < candidateCount; i++)
                     {
                         var confidence = output[0, channel, i];
 
-                        if (isPlayerChannel && confidence > maxConfidenceSeen)
+                        if (isDiagnosticsChannel && confidence > maxConfidenceSeen)
                         {
                             maxConfidenceSeen = confidence;
                         }
@@ -89,7 +99,7 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
                             continue;
                         }
 
-                        if (isPlayerChannel)
+                        if (isDiagnosticsChannel)
                         {
                             aboveThresholdCount++;
                         }

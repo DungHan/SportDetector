@@ -9,9 +9,10 @@ public class ModelsConfigTests
     {
         var config = ModelsConfig.LoadFromJsonOrDefault(Path.Combine(Path.GetTempPath(), $"models-{Guid.NewGuid():N}.json"));
 
-        Assert.Equal("basketball_nba_court-keypoints_1280_yolov8s-pose.onnx", config.CourtKeypoints.ModelPath);
-        Assert.Equal(1280, config.CourtKeypoints.InputSize);
+        Assert.Equal("basketball_nba_court-keypoints_960_yolov8m-pose.onnx", config.CourtKeypoints.ModelPath);
+        Assert.Equal(960, config.CourtKeypoints.InputSize);
         Assert.Equal(PlayerDetectionConfig.DefaultClassNames, config.PlayerDetection.ClassNames);
+        Assert.Equal(BallDetectionConfig.DefaultClassNames, config.BallDetection.ClassNames);
     }
 
     [Fact]
@@ -27,10 +28,11 @@ public class ModelsConfigTests
             var config = ModelsConfig.LoadFromJsonOrDefault(path);
 
             Assert.Equal(0.35f, config.CourtKeypoints.KeypointConfidenceThreshold);
-            Assert.Equal("basketball_nba_court-keypoints_1280_yolov8s-pose.onnx", config.CourtKeypoints.ModelPath);
-            Assert.Equal(1280, config.CourtKeypoints.InputSize);
+            Assert.Equal("basketball_nba_court-keypoints_960_yolov8m-pose.onnx", config.CourtKeypoints.ModelPath);
+            Assert.Equal(960, config.CourtKeypoints.InputSize);
             Assert.Equal("sport-classifier_224_clip-vitb32.onnx", config.SportClassifier.ModelPath);
             Assert.Equal("jersey-number.onnx", config.JerseyNumber.ModelPath);
+            Assert.Equal("basketball_nba_ball-detection_960_yolov8m.onnx", config.BallDetection.ModelPath);
         }
         finally
         {

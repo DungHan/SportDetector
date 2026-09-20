@@ -5,16 +5,23 @@
     "inputSize": 224
   },
   "courtKeypoints": {
-    "modelPath": "basketball_nba_court-keypoints_1280_yolov8s-pose.onnx",
-    "inputSize": 1280,
+    "modelPath": "basketball_nba_court-keypoints_960_yolov8m-pose.onnx",
+    "inputSize": 960,
     "keypointConfidenceThreshold": 0.5,
     "detectionConfidenceThreshold": 0.5
   },
   "playerDetection": {
-    "modelPath": "basketball_nba_player-detection_1280_yolov8m.onnx",
-    "inputSize": 1280,
-    "classNames": ["Ball", "Hoop", "Period", "Player", "Ref", "Shot Clock", "Team Name", "Team Points", "Time Remaining"],
-    "playerClassId": 3,
+    "modelPath": "basketball_nba_player-detection_960_yolov8m.onnx",
+    "inputSize": 960,
+    "classNames": ["Player", "Ref"],
+    "playerClassId": 0,
+    "confidenceThreshold": 0.35,
+    "iouThreshold": 0.6
+  },
+  "ballDetection": {
+    "modelPath": "basketball_nba_ball-detection_960_yolov8m.onnx",
+    "inputSize": 960,
+    "classNames": ["Ball"],
     "confidenceThreshold": 0.35,
     "iouThreshold": 0.6
   },

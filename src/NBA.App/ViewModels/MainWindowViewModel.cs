@@ -27,6 +27,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly ICourtKeypointDetector _keypointDetector;
     private readonly IMultiClassObjectDetector _multiClassObjectDetector;
     private readonly IPlayerTracker _playerTracker;
+    private readonly IMultiClassObjectDetector _ballDetector;
     private readonly IScoreboardOcrEngine _scoreboardOcr;
     private readonly ISourceProfileStore _profileStore;
     private readonly IJerseyNumberRecognizer _jerseyNumberRecognizer;
@@ -40,9 +41,14 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     // as it keeps coming back Unknown, e.g. because the opening frames of a source don't show the court yet.
     private static readonly TimeSpan SportClassificationRetryInterval = TimeSpan.FromMilliseconds(500);
 
-    // The `vision/on-court-object-detection` classes whose union bounding box sources the scoreboard OCR crop
-    // region (ocr/scoreboard-recognition spec) - deliberately excludes Ball/Hoop/Player/Ref, which aren't part
-    // of the scoreboard graphic.
+    // The on-court-object-detection classes whose union bounding box sources the scoreboard OCR crop region
+    // (ocr/scoreboard-recognition spec) - deliberately excludes Ball/Hoop/Player/Ref, which aren't part of the
+    // scoreboard graphic. Neither of today's two trained models (_multiClassObjectDetector's Player/Ref-only
+    // export, _ballDetector's Ball-only export) emits any of these classes at all, so scoreboardCandidates
+    // below is always empty for now - this degrades to NormalizedRect.DefaultScoreboardRegion/the per-source
+    // manual override, the same fallback already used when no scoreboard detection has happened yet, rather
+    // than throwing or breaking scoreboard OCR outright. Kept (not deleted) so a future model retrain that
+    // reintroduces scoreboard-element classes lights this back up with no code changes.
     private static readonly HashSet<string> ScoreboardRelatedClassNames =
     [
         "Period", "Shot Clock", "Team Name", "Team Points", "Time Remaining",
@@ -81,6 +87,11 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         IJerseyNumberRecognizer jerseyNumberRecognizer,
         IJerseyNumberVoteAggregator jerseyNumberVoteAggregator,
         PlaybackRegionCoordinator playbackRegionCoordinator,
+        // Optional (unlike every other collaborator above) so the many existing call sites that don't care
+        // about ball detection specifically don't all need updating just to pass a Null-object placeholder -
+        // defaults to the same "no model/no signal" degraded posture NullMultiClassObjectDetector already
+        // gives multiClassObjectDetector when its own model file is absent.
+        IMultiClassObjectDetector? ballDetector = null,
         int detectionIntervalFrames = 3)
     {
         _frameSource = frameSource;
@@ -89,6 +100,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _keypointDetector = keypointDetector;
         _multiClassObjectDetector = multiClassObjectDetector;
         _playerTracker = playerTracker;
+        _ballDetector = ballDetector ?? new NullMultiClassObjectDetector();
         _scoreboardOcr = scoreboardOcr;
         _profileStore = profileStore;
         _jerseyNumberRecognizer = jerseyNumberRecognizer;
@@ -413,19 +425,26 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         IReadOnlyList<TrackedPlayer> trackedPlayers;
         if (isDetectionFrame)
         {
-            // One shared inference pass produces both players and every other on-court/broadcast-overlay class
-            // (vision/on-court-object-detection spec's "one inference pass" requirement) - never a second
-            // Detect(...) call to get the non-Player classes. The result comes back in the crop's own pixel
-            // space (or full-frame space when no crop is active), the same reference space
-            // NormalizedRect.DefaultScoreboardRegion/SourceProfile.ScoreboardRegion are already normalized
-            // against - so the scoreboard-region computation just below reads it before it's offset to
-            // full-frame coordinates for the tracker/overlay uses further down.
+            // Two separate inference passes, over two separate trained models: _multiClassObjectDetector
+            // (Player/Ref) and _ballDetector (Ball-only) - the player-detection export no longer includes a
+            // "Ball" class, so there's no longer a single shared model both can come from. Both results come
+            // back in the crop's own pixel space (or full-frame space when no crop is active), the same
+            // reference space NormalizedRect.DefaultScoreboardRegion/SourceProfile.ScoreboardRegion are already
+            // normalized against - so the scoreboard-region computation just below reads the merged result
+            // before it's offset to full-frame coordinates for the tracker/overlay uses further down.
             MultiClassDetectionResult detectionResult;
             try
             {
-                detectionResult = playbackCrop is { } crop
-                    ? _multiClassObjectDetector.Detect(crop.Pixels, crop.Width, crop.Height, crop.Stride)
+                var playerResult = playbackCrop is { } playerCrop
+                    ? _multiClassObjectDetector.Detect(playerCrop.Pixels, playerCrop.Width, playerCrop.Height, playerCrop.Stride)
                     : _multiClassObjectDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+                var ballResult = playbackCrop is { } ballCrop
+                    ? _ballDetector.Detect(ballCrop.Pixels, ballCrop.Width, ballCrop.Height, ballCrop.Stride)
+                    : _ballDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+
+                detectionResult = new MultiClassDetectionResult(
+                    playerResult.Players,
+                    [.. playerResult.Others, .. ballResult.Others]);
             }
             catch (Exception ex)
             {

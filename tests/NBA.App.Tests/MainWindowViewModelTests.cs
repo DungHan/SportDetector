@@ -643,9 +643,10 @@ public class MainWindowViewModelTests : IDisposable
     [AvaloniaFact]
     public async Task FrameArrived_OnDetectionFrame_CallsMultiClassDetectorExactlyOnce()
     {
-        // Regression guard for this change's core "one inference pass" goal: players and every other on-court
-        // class must come from a single Detect(...) call, never one call for players plus a separate call for
-        // everything else.
+        // Regression guard: the player/referee detector's Detect(...) must be called exactly once per
+        // detection frame, not once per class or once per some other subdivision. A separate _ballDetector
+        // (defaulting to NullMultiClassObjectDetector here, since this test doesn't pass one) gets its own
+        // independent Detect(...) call and doesn't affect this detector's own call count.
         var frameSource = new FakeFrameSource();
         var store = new FileSourceProfileStore(_directory);
         var detector = new StubMultiClassObjectDetector
@@ -936,6 +937,48 @@ public class MainWindowViewModelTests : IDisposable
         var hoop = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "Hoop");
         Assert.Equal("Hoop", hoop.StyleKey);
         Assert.Equal([(5.0, 6.0), (7.0, 8.0)], hoop.Points);
+    }
+
+    [AvaloniaFact]
+    public async Task FrameArrived_OnDetectionFrame_MergesBallDetectorOthersWithPlayerDetectorOthers()
+    {
+        // The player/referee model and the ball model are two separate trained models behind two separate
+        // IMultiClassObjectDetector instances (App.axaml.cs's composition root) - both are queried on every
+        // detection frame and their Others lists combined into one, rather than one replacing the other.
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var playerDetector = new StubMultiClassObjectDetector
+        {
+            OtherDetections = [new OnCourtObjectDetection(5, 6, 7, 8, 0.8f, "Ref")],
+        };
+        var ballDetector = new StubMultiClassObjectDetector
+        {
+            OtherDetections = [new OnCourtObjectDetection(1, 2, 3, 4, 0.9f, "Ball")],
+        };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            playerDetector,
+            new ByteTrackPlayerTracker(),
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
+            ballDetector: ballDetector,
+            detectionIntervalFrames: 1);
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(1, ballDetector.CallCount);
+        Assert.Equal(2, viewModel.RawOverlay.Annotations.Count);
+        Assert.Contains(viewModel.RawOverlay.Annotations, a => a.Label == "Ball");
+        Assert.Contains(viewModel.RawOverlay.Annotations, a => a.Label == "Ref");
     }
 
     [AvaloniaFact]
