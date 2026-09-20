@@ -15,7 +15,7 @@ public static class FrameBitmapConverter
     public static WriteableBitmap ToWriteableBitmap(CourtDiagramImage image) =>
         ToWriteableBitmap(image.BgraPixels, image.Width, image.Height, image.Stride);
 
-    private static WriteableBitmap ToWriteableBitmap(ReadOnlySpan<byte> pixels, int width, int height, int stride)
+    public static WriteableBitmap ToWriteableBitmap(ReadOnlySpan<byte> pixels, int width, int height, int stride)
     {
         var bitmap = new WriteableBitmap(
             new PixelSize(width, height),
