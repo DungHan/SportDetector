@@ -48,6 +48,13 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         "Period", "Shot Clock", "Team Name", "Team Points", "Time Remaining",
     ];
 
+    // Basketball never has more than 10 players (5 per team) on court at once. ByteTrackPlayerTracker
+    // deliberately keeps a track alive and visible for a few frames after it stops matching real detections
+    // (see its type-level doc comment's occlusion-buffer rationale), so a live track count above 10 means some
+    // of them are coasting duplicates of a player whose track briefly fragmented, not real extra people - the
+    // minimap caps to this many, preferring tracks with a real match this frame over ones merely coasting.
+    private const int MaxPlayersOnCourtSimultaneously = 10;
+
     private string? _currentSourceKey;
     private NormalizedRect? _currentPlaybackRegion;
     private DateTimeOffset _lastScoreboardCheckAt;
@@ -566,25 +573,25 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         {
             CourtGeometryRegistry.TryGet(sport.Value, out currentGeometry);
 
-            var keypointMarkers = keypoints.Select(k =>
-            {
-                var court = PointProjector.Project(calibration, k.Position);
-                return new CourtMarker(court.X, court.Y, k.LandmarkName);
-            });
+            // Only players are plotted on the minimap - court keypoints are calibration's internal input, not
+            // something a viewer needs to see once the diagram itself already draws the court lines. Foot point
+            // (bottom-center of the box) rather than the box itself - the minimap plots a single court-space
+            // position per player, not an area (dual-view-shell spec's "Minimap plots tracked players' court
+            // positions"). Carries the track's sampled jersey color so MinimapView.axaml.cs can fill each
+            // marker with it instead of one flat color for every player.
+            var playerMarkers = trackedPlayers
+                .OrderBy(t => t.FramesSinceMatch)
+                .ThenByDescending(t => t.Confidence)
+                .Take(MaxPlayersOnCourtSimultaneously)
+                .Select(t =>
+                {
+                    var footPoint = new ImagePoint((t.Left + t.Right) / 2, t.Bottom);
+                    var court = PointProjector.Project(calibration, footPoint);
+                    var label = resolvedJerseyNumbers.TryGetValue(t.TrackId, out var number) ? $"#{number}" : $"#{t.TrackId}";
+                    return new CourtMarker(court.X, court.Y, label, "player", t.Color);
+                });
 
-            // Foot point (bottom-center of the box) rather than the box itself - the minimap plots a single
-            // court-space position per player, not an area (dual-view-shell spec's "Minimap plots tracked
-            // players' court positions"). Styled "player" so MinimapView.axaml renders it distinctly from the
-            // unstyled keypoint markers above, now that both appear on the same diagram.
-            var playerMarkers = trackedPlayers.Select(t =>
-            {
-                var footPoint = new ImagePoint((t.Left + t.Right) / 2, t.Bottom);
-                var court = PointProjector.Project(calibration, footPoint);
-                var label = resolvedJerseyNumbers.TryGetValue(t.TrackId, out var number) ? $"#{number}" : $"#{t.TrackId}";
-                return new CourtMarker(court.X, court.Y, label, "player");
-            });
-
-            markers = keypointMarkers.Concat(playerMarkers).ToList();
+            markers = playerMarkers.ToList();
         }
 
         Dispatcher.UIThread.Post(() =>

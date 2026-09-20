@@ -5,7 +5,7 @@ namespace NBA.App.Models;
 /// to a tuple list in markup, which Avalonia's compiled bindings handle poorly). <see cref="Width"/>/<see cref="Height"/>
 /// are set only for a <see cref="OverlayShapeKind.Box"/> annotation.
 /// </summary>
-public sealed record AnnotationVisual(double X, double Y, double? Width, double? Height, string? Label, string? StyleKey = null)
+public sealed record AnnotationVisual(double X, double Y, double? Width, double? Height, string? Label, string? StyleKey = null, (byte R, byte G, byte B)? Color = null)
 {
     public static AnnotationVisual? FromAnnotation(OverlayAnnotation annotation) => annotation.Shape switch
     {

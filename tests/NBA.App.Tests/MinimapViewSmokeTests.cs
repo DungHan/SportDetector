@@ -64,23 +64,35 @@ public class MinimapViewSmokeTests
     }
 
     [AvaloniaFact]
-    public void PlayerMarker_RendersWithDistinctFillFromKeypointMarker()
+    public void PlayerMarker_WithSampledJerseyColor_FillsCircleWithThatColor()
     {
         var viewModel = new MinimapViewModel { HasValidCalibration = true };
         var view = new MinimapView { DataContext = viewModel };
         var window = new Window { Content = view };
         window.Show();
 
-        viewModel.SetMarkers([
-            new CourtMarker(1, 1, "Landmark"),
-            new CourtMarker(2, 2, "#7", "player"),
-        ]);
+        viewModel.SetMarkers([new CourtMarker(2, 2, "#7", "player", (200, 30, 30))]);
         Avalonia.Threading.Dispatcher.UIThread.RunJobs();
 
         var fills = view.GetVisualDescendants().OfType<Ellipse>().Select(e => ((SolidColorBrush)e.Fill!).Color).ToList();
 
-        Assert.Contains(Color.Parse("#40A0FF"), fills); // unstyled keypoint marker keeps its existing color
-        Assert.Contains(Color.Parse("#F2F2F2"), fills); // "player"-styled marker gets a distinct color
+        Assert.Contains(Color.FromRgb(200, 30, 30), fills);
+    }
+
+    [AvaloniaFact]
+    public void PlayerMarker_WithNoSampledJerseyColor_FallsBackToNeutralFill()
+    {
+        var viewModel = new MinimapViewModel { HasValidCalibration = true };
+        var view = new MinimapView { DataContext = viewModel };
+        var window = new Window { Content = view };
+        window.Show();
+
+        viewModel.SetMarkers([new CourtMarker(2, 2, "#7", "player")]);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var ellipse = view.GetVisualDescendants().OfType<Ellipse>().Single();
+
+        Assert.Equal(Color.Parse("#9A9A9A"), ((SolidColorBrush)ellipse.Fill!).Color);
     }
 
     [AvaloniaFact]

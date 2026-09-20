@@ -103,6 +103,27 @@ public class ByteTrackPlayerTrackerTests
     }
 
     [Fact]
+    public void Update_FramesSinceMatch_ZeroWhenMatchedThisCall_PositiveWhileCoasting()
+    {
+        // A consumer that needs to distinguish "this frame's real detection" from "still shown but coasting on
+        // motion prediction" (e.g. the minimap capping how many players it shows at once) reads this field -
+        // it must track the same occlusion-buffer state Update_UnmatchedPastVisibilityLimit_... exercises above.
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: 2);
+
+        var matched = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        Assert.Equal(0, Assert.Single(matched).FramesSinceMatch);
+
+        var missedOnce = tracker.Update([]);
+        Assert.Equal(1, Assert.Single(missedOnce).FramesSinceMatch);
+
+        var missedTwice = tracker.Update([]);
+        Assert.Equal(2, Assert.Single(missedTwice).FramesSinceMatch);
+
+        var rematched = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        Assert.Equal(0, Assert.Single(rematched).FramesSinceMatch);
+    }
+
+    [Fact]
     public void PredictOnly_TrackWithheldAfterMissedUpdates_StaysWithheldDuringPrediction()
     {
         var tracker = new ByteTrackPlayerTracker(maxLostFrames: 10, maxVisibleLostFrames: 1);
@@ -225,6 +246,27 @@ public class ByteTrackPlayerTrackerTests
     private static readonly (byte R, byte G, byte B) Blue = (10, 10, 250);
 
     [Fact]
+    public void Update_MatchedDetectionWithColor_SurfacesItOnTrackedPlayer()
+    {
+        // TrackedPlayer.Color is the display-facing exposure of the tracker's internal color-veto estimate
+        // (see MinimapView.axaml.cs's per-player marker fill) - this pins that it actually reaches the public
+        // result, not just the private Track used for veto matching.
+        var tracker = new ByteTrackPlayerTracker();
+
+        var spawned = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);
+        Assert.Equal(Red, Assert.Single(spawned).Color);
+    }
+
+    [Fact]
+    public void Update_DetectionWithNoSampledColor_LeavesTrackedPlayerColorNull()
+    {
+        var tracker = new ByteTrackPlayerTracker();
+
+        var spawned = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        Assert.Null(Assert.Single(spawned).Color);
+    }
+
+    [Fact]
     public void Update_ColorMismatchedPair_NotAssociatedDespiteIouOverlap()
     {
         var tracker = new ByteTrackPlayerTracker();
@@ -339,8 +381,9 @@ public class ByteTrackPlayerTrackerTests
     [Fact]
     public void Update_RepeatedlyMatchedAgainstADifferentColor_EmaConvergesAwayFromTheSeededColor()
     {
-        // Track.Color has no public accessor (design.md: an internal appearance signal, never rendered), so
-        // convergence is observed indirectly through its effect on the veto, not read directly.
+        // Convergence is observed indirectly through its effect on the veto rather than by reading
+        // TrackedPlayer.Color directly - exact EMA rounding at each step would make a direct assertion brittle,
+        // whereas "does the veto now treat this track as Blue" is the behavior that actually matters.
         var tracker = new ByteTrackPlayerTracker();
 
         var seeded = tracker.Update([Box(0, 0, 10, 10, 0.9f, Red)]);

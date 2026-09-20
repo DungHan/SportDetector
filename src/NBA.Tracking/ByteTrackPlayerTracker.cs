@@ -174,8 +174,13 @@ public sealed class ByteTrackPlayerTracker(
     /// <summary>Every live track, excluding those coasting on pure motion prediction past <paramref name="maxVisibleLostFrames"/> - see the type-level doc comment.</summary>
     private IReadOnlyList<TrackedPlayer> ToVisiblePlayers() => _tracks
         .Where(t => t.LostFrames <= maxVisibleLostFrames)
-        .Select(t => new TrackedPlayer(t.Id, t.LastBox.Left, t.LastBox.Top, t.LastBox.Right, t.LastBox.Bottom, t.LastConfidence))
+        .Select(t => new TrackedPlayer(t.Id, t.LastBox.Left, t.LastBox.Top, t.LastBox.Right, t.LastBox.Bottom, t.LastConfidence, t.LostFrames, ToByteColor(t.Color)))
         .ToList();
+
+    /// <summary>Rounds the track's running double-precision EMA color estimate to display-ready bytes.</summary>
+    private static (byte R, byte G, byte B)? ToByteColor((double R, double G, double B)? color) => color is { } c
+        ? ((byte)Math.Clamp(Math.Round(c.R), 0, 255), (byte)Math.Clamp(Math.Round(c.G), 0, 255), (byte)Math.Clamp(Math.Round(c.B), 0, 255))
+        : null;
 
     public void Reset() => _tracks.Clear();
 

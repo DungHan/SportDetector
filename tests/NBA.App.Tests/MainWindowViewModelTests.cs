@@ -286,7 +286,7 @@ public class MainWindowViewModelTests : IDisposable
 
         Assert.True(viewModel.Minimap.HasValidCalibration);
         Assert.Equal(keypoints.Count + 1, viewModel.RawOverlay.Annotations.Count);
-        Assert.Equal(keypoints.Count + 1, viewModel.Minimap.Markers.Count); // keypoint markers + one player marker
+        Assert.Single(viewModel.Minimap.Markers); // only the one player marker - keypoints aren't plotted on the minimap
 
         var trackAnnotation = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "#1");
         Assert.Equal(OverlayShapeKind.Box, trackAnnotation.Shape);
@@ -396,6 +396,60 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task FrameArrived_MoreThanTenTrackedPlayers_CapsMinimapMarkersToTen_PreferringRealMatchesOverCoasting()
+    {
+        // Basketball never has more than 10 players on court - a live track count above that means some are
+        // ByteTrackPlayerTracker's deliberate stale-but-still-visible coasting duplicates (see TrackedPlayer's
+        // FramesSinceMatch doc comment), not real extra people. 8 tracks matched this frame (FramesSinceMatch:
+        // 0) plus 4 merely coasting (FramesSinceMatch: 1, distinct confidences) - the cap must keep all 8 real
+        // matches (real always outranks coasting) and fill the remaining 2 slots with the 2 highest-confidence
+        // coasting tracks, dropping the 2 least-confident coasting ones entirely.
+        var store = new FileSourceProfileStore(_directory);
+        var sourceKey = SourceIdentity.DeriveKey(SourceA);
+        new CourtCalibrationCoordinator(store).ManualCalibrate(sourceKey, SportType.Basketball, KnownCorrespondences());
+
+        var frameSource = new FakeFrameSource();
+        var keypoints = KnownCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
+        var realMatches = Enumerable.Range(1, 8)
+            .Select(id => new TrackedPlayer(id, id * 2, id * 2, (id * 2) + 2, (id * 2) + 2, 0.9f, FramesSinceMatch: 0));
+        var coasting = new[]
+        {
+            new TrackedPlayer(101, 0, 0, 2, 2, 0.95f, FramesSinceMatch: 1), // 2 highest-confidence coasting -> kept
+            new TrackedPlayer(102, 0, 0, 2, 2, 0.85f, FramesSinceMatch: 1), // tracks fill the 2 remaining slots
+            new TrackedPlayer(103, 0, 0, 2, 2, 0.75f, FramesSinceMatch: 1), // -> dropped, cap already full
+            new TrackedPlayer(104, 0, 0, 2, 2, 0.65f, FramesSinceMatch: 1), // -> dropped, cap already full
+        };
+        var playerTracker = new StubPlayerTracker { Tracks = [.. realMatches, .. coasting] };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store),
+            new StubKeypointDetector(keypoints),
+            new StubMultiClassObjectDetector(),
+            playerTracker,
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store));
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var playerMarkers = viewModel.Minimap.Markers.Where(m => m.StyleKey == "player").ToList();
+        Assert.Equal(10, playerMarkers.Count);
+        for (var id = 1; id <= 8; id++)
+        {
+            Assert.Contains(playerMarkers, m => m.Label == $"#{id}");
+        }
+        Assert.Contains(playerMarkers, m => m.Label == "#101");
+        Assert.Contains(playerMarkers, m => m.Label == "#102");
+        Assert.DoesNotContain(playerMarkers, m => m.Label is "#103" or "#104");
+    }
+
+    [AvaloniaFact]
     public async Task FrameArrived_WithResolvedJerseyNumber_MinimapMarkerShowsResolvedNumber_RawOverlayLabelUnaffected()
     {
         var store = new FileSourceProfileStore(_directory);
@@ -433,7 +487,7 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
-    public async Task FrameArrived_WhenTrackDisappears_MinimapDropsBackToJustKeypointMarkers()
+    public async Task FrameArrived_WhenTrackDisappears_MinimapMarkersGoEmpty()
     {
         var store = new FileSourceProfileStore(_directory);
         var sourceKey = SourceIdentity.DeriveKey(SourceA);
@@ -460,14 +514,13 @@ public class MainWindowViewModelTests : IDisposable
         frameSource.PublishFrame(MakeFrame());
         Avalonia.Threading.Dispatcher.UIThread.RunJobs();
         Assert.True(viewModel.Minimap.HasValidCalibration);
-        Assert.Equal(keypoints.Count + 1, viewModel.Minimap.Markers.Count); // keypoint markers + the one live track
+        Assert.Single(viewModel.Minimap.Markers); // only the one live track - keypoints aren't plotted on the minimap
 
         playerTracker.Tracks = [];
         frameSource.PublishFrame(MakeFrame());
         Avalonia.Threading.Dispatcher.UIThread.RunJobs();
 
-        Assert.Equal(keypoints.Count, viewModel.Minimap.Markers.Count); // player marker gone, keypoint markers remain
-        Assert.DoesNotContain(viewModel.Minimap.Markers, m => m.StyleKey == "player");
+        Assert.Empty(viewModel.Minimap.Markers); // player marker gone, nothing left to plot
     }
 
     [AvaloniaFact]
