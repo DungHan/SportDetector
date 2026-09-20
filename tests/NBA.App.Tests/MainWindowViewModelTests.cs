@@ -724,7 +724,7 @@ public class MainWindowViewModelTests : IDisposable
         // Reported as if found within the crop's own pixel space - the assertions below check it comes back
         // offset into full-frame space, not left as-is (PlaybackRegionCoordinator/FrameCropper wiring in
         // MainWindowViewModel.OnFrameArrived).
-        var playerDetector = new StubMultiClassObjectDetector { Detections = [new PlayerDetection(1, 1, 2, 2, 0.9f)] };
+        var playerDetector = new StubMultiClassObjectDetector { Detections = [new PlayerDetection(1, 1, 2, 2, 0.9f, ((byte)10, (byte)20, (byte)30))] };
         var playerTracker = new StubPlayerTracker();
         await using var viewModel = new MainWindowViewModel(
             frameSource,
@@ -757,7 +757,7 @@ public class MainWindowViewModelTests : IDisposable
         Assert.Equal(4, playerDetector.LastHeight);
 
         var detection = Assert.Single(playerTracker.LastDetections);
-        Assert.Equal(new PlayerDetection(3, 3, 4, 4, 0.9f), detection);
+        Assert.Equal(new PlayerDetection(3, 3, 4, 4, 0.9f, ((byte)10, (byte)20, (byte)30)), detection);
     }
 
     [AvaloniaFact]
