@@ -23,6 +23,9 @@ public sealed class OnnxCourtKeypointDetector : ICourtKeypointDetector, IDisposa
 
     public SportType Sport => _geometry.Sport;
 
+    /// <summary>Which ONNX Runtime execution provider this instance's session actually ended up on (see <see cref="ExecutionProviderSelector"/>).</summary>
+    public ExecutionProviderKind Provider => _pipeline.Provider;
+
     public float KeypointConfidenceThreshold { get; set; }
 
     public float DetectionConfidenceThreshold { get; set; }

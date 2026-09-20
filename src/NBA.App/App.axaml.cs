@@ -53,6 +53,11 @@ public partial class App : Application
                     onScored: ranked => Console.WriteLine("[sport-classify] " + string.Join(", ", ranked.Select(r => $"{r.Sport}={r.Probability:P1}"))))
                 : new NullSportClassifier();
 
+            if (sportClassifier is ClipZeroShotSportClassifier sportClassifierWithProvider)
+            {
+                Console.WriteLine($"[onnx] sport-classifier provider={sportClassifierWithProvider.Provider}");
+            }
+
             // TEMPORARY diagnostic (remove after calibration): dumps the exact raw BGRA8 frame handed to the
             // classifier on the first real classification, so we can independently re-run preprocessing in
             // Python and check whether a flat/uncertain score distribution is a real CLIP-zero-shot limitation
@@ -76,6 +81,11 @@ public partial class App : Application
                     detectionConfidenceThreshold: modelsConfig.CourtKeypoints.DetectionConfidenceThreshold)
                 : new NullCourtKeypointDetector(SportType.Basketball);
 
+            if (keypointDetector is OnnxCourtKeypointDetector keypointDetectorWithProvider)
+            {
+                Console.WriteLine($"[onnx] court-keypoints provider={keypointDetectorWithProvider.Provider}");
+            }
+
             // No trained player-detection model is shipped in this change yet (see design.md's risk entries
             // in openspec/changes/add-player-detection/) - falls back to the degraded zero-detections path.
             IMultiClassObjectDetector multiClassObjectDetector = File.Exists(playerDetectionModelPath)
@@ -83,14 +93,15 @@ public partial class App : Application
                     playerDetectionModelPath,
                     // Values come from models/models.json (see ModelsConfig), defaulting to this model's own
                     // embedded class-name metadata (models/README.md's
-                    // "basketball_nba_player-detection_960_yolov8m.onnx" section, verified via the file's own
-                    // onnx.metadata_props `names` key) - the order here must match that metadata's index order
-                    // exactly, since classIndex 4+i's channel is decoded positionally, not by name.
+                    // "basketball_nba_player-detection_640_yolov8m-fp16.onnx.onnx" section, verified via the
+                    // file's own onnx.metadata_props `names` key) - the order here must match that metadata's
+                    // index order exactly, since classIndex 4+i's channel is decoded positionally, not by name.
                     classNames: modelsConfig.PlayerDetection.ClassNames,
                     // Defaults to this specific model's export size (models/README.md's
-                    // "basketball_nba_player-detection_960_yolov8m.onnx" section: verified imgsz=[960,960]
-                    // from the file's own embedded metadata) - the library
-                    // default of 640 assumes a stock yolov8n-shaped export and would letterbox/resize to the
+                    // "basketball_nba_player-detection_640_yolov8m-fp16.onnx.onnx" section: verified
+                    // imgsz=[640,640] via InferenceSession.InputMetadata against the actual file, after an
+                    // earlier re-export under this same file name had turned out to still be fixed at 960x960
+                    // despite its name/config) - passing the wrong size here would letterbox/resize to the
                     // wrong size against this model, scrambling every box's decoded coordinates.
                     inputSize: modelsConfig.PlayerDetection.InputSize,
                     // Defaults lowered from the library defaults (confidenceThreshold: 0.5, iouThreshold: 0.45):
@@ -115,6 +126,11 @@ public partial class App : Application
                         Console.WriteLine($"[player-detect] maxConfidence={maxConfidence:P1} aboveThreshold={aboveThresholdCount}"))
                 : new NullMultiClassObjectDetector();
 
+            if (multiClassObjectDetector is OnnxMultiClassObjectDetector playerDetectorWithProvider)
+            {
+                Console.WriteLine($"[onnx] player-detection provider={playerDetectorWithProvider.Provider}");
+            }
+
             // A separate trained model and a separate inference pass from multiClassObjectDetector above -
             // the player-detection export above no longer includes a "Ball" class (it only ever has
             // Player/Ref), so ball detection needs its own model and its own Detect(...) call.
@@ -135,6 +151,11 @@ public partial class App : Application
                     // Others list, never fed into PlayerDetection/ByteTrackPlayerTracker.
                     playerClassId: null)
                 : new NullMultiClassObjectDetector();
+
+            if (ballDetector is OnnxMultiClassObjectDetector ballDetectorWithProvider)
+            {
+                Console.WriteLine($"[onnx] ball-detection provider={ballDetectorWithProvider.Provider}");
+            }
 
             // No missing-model degraded path needed here (unlike the detectors above) - ByteTrackPlayerTracker
             // is a pure algorithm over already-in-memory boxes, not backed by an external model file (see
@@ -167,6 +188,11 @@ public partial class App : Application
                     confidenceThreshold: modelsConfig.JerseyNumber.ConfidenceThreshold)
                 : new NullJerseyNumberRecognizer();
             IJerseyNumberVoteAggregator jerseyNumberVoteAggregator = new PluralityJerseyNumberVoteAggregator();
+
+            if (jerseyNumberRecognizer is OnnxJerseyNumberRecognizer jerseyNumberRecognizerWithProvider)
+            {
+                Console.WriteLine($"[onnx] jersey-number provider={jerseyNumberRecognizerWithProvider.Provider}");
+            }
 
             var mainViewModel = new MainWindowViewModel(
                 CapturePlatform.CreateFrameSource(),

@@ -28,6 +28,9 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
         (IReadOnlyList<(double X1, double Y1, double X2, double Y2, float Confidence)> Players,
          IReadOnlyList<(double X1, double Y1, double X2, double Y2, float Confidence, string ClassName)> Others)> _pipeline;
 
+    /// <summary>Which ONNX Runtime execution provider this instance's session actually ended up on (see <see cref="ExecutionProviderSelector"/>).</summary>
+    public ExecutionProviderKind Provider => _pipeline.Provider;
+
     public OnnxMultiClassObjectDetector(
         string modelPath,
         IReadOnlyList<string> classNames,

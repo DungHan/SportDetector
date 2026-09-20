@@ -28,6 +28,9 @@ public sealed class ClipZeroShotSportClassifier : ISportClassifier, IDisposable
     private readonly float _logitScale;
     private readonly OnnxModelPipeline<(byte[] Pixels, int Width, int Height, int Stride), float[]> _pipeline;
 
+    /// <summary>Which ONNX Runtime execution provider this instance's session actually ended up on (see <see cref="ExecutionProviderSelector"/>).</summary>
+    public ExecutionProviderKind Provider => _pipeline.Provider;
+
     /// <param name="visionEncoderModelPath">Path to a CLIP/SigLIP vision-encoder-only ONNX export (no text tower).</param>
     /// <param name="prompts">One entry per registered sport, each an already L2-normalized text embedding computed offline (see <see cref="ClipPromptEmbeddings"/>).</param>
     /// <param name="inputSize">Vision encoder's expected square input resolution (224 for CLIP ViT-B/32 and most siblings).</param>

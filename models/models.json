@@ -5,21 +5,21 @@
     "inputSize": 224
   },
   "courtKeypoints": {
-    "modelPath": "basketball_nba_court-keypoints_960_yolov8m-pose.onnx",
+    "modelPath": "basketball_nba_court-keypoints_960_yolov8m-pose-fp16.onnx",
     "inputSize": 960,
     "keypointConfidenceThreshold": 0.5,
     "detectionConfidenceThreshold": 0.5
   },
   "playerDetection": {
-    "modelPath": "basketball_nba_player-detection_960_yolov8m.onnx",
-    "inputSize": 960,
+    "modelPath": "basketball_nba_player-detection_640_yolov8m-fp16.onnx.onnx",
+    "inputSize": 640,
     "classNames": ["Player", "Ref"],
     "playerClassId": 0,
     "confidenceThreshold": 0.35,
     "iouThreshold": 0.6
   },
   "ballDetection": {
-    "modelPath": "basketball_nba_ball-detection_960_yolov8m.onnx",
+    "modelPath": "basketball_nba_ball-detection_960_yolov8m-fp16.onnx",
     "inputSize": 960,
     "classNames": ["Ball"],
     "confidenceThreshold": 0.35,

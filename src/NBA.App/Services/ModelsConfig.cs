@@ -21,8 +21,8 @@ public sealed record PlayerDetectionConfig
 {
     public static readonly IReadOnlyList<string> DefaultClassNames = ["Player", "Ref"];
 
-    public string ModelPath { get; init; } = "basketball_nba_player-detection_960_yolov8m.onnx";
-    public int InputSize { get; init; } = 960;
+    public string ModelPath { get; init; } = "basketball_nba_player-detection_640_yolov8m-fp16.onnx.onnx";
+    public int InputSize { get; init; } = 640;
     public IReadOnlyList<string> ClassNames { get; init; } = DefaultClassNames;
     public int PlayerClassId { get; init; } = 0;
     public float ConfidenceThreshold { get; init; } = 0.35f;

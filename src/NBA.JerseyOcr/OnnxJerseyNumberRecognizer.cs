@@ -19,6 +19,9 @@ public sealed class OnnxJerseyNumberRecognizer : IJerseyNumberRecognizer, IDispo
     private readonly float _confidenceThreshold;
     private readonly OnnxModelPipeline<(byte[] Pixels, int Width, int Height, int Stride, int CropX, int CropY, int CropWidth, int CropHeight), (int ClassId, float Confidence)> _pipeline;
 
+    /// <summary>Which ONNX Runtime execution provider this instance's session actually ended up on (see <see cref="ExecutionProviderSelector"/>).</summary>
+    public ExecutionProviderKind Provider => _pipeline.Provider;
+
     public OnnxJerseyNumberRecognizer(string modelPath, int inputSize = 64, float confidenceThreshold = 0.5f)
     {
         _inputSize = inputSize;
