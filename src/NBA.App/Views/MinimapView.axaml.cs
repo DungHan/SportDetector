@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Shapes;
 using Avalonia.Media;
@@ -63,6 +64,12 @@ public partial class MinimapView : UserControl
 
         foreach (var visual in viewModel.MarkerVisuals)
         {
+            if (visual.StyleKey == "ball")
+            {
+                AddBallMarker(visual.X, visual.Y);
+                continue;
+            }
+
             var fillColor = visual.Color is { } rgb ? Color.FromRgb(rgb.R, rgb.G, rgb.B) : UnknownJerseyColor;
             var ellipse = new Ellipse
             {
@@ -99,5 +106,65 @@ public partial class MinimapView : UserControl
     {
         var luminance = ((0.299 * background.R) + (0.587 * background.G) + (0.114 * background.B)) / 255.0;
         return luminance > 0.6 ? Brushes.Black : Brushes.White;
+    }
+
+    // Smaller than a player marker (MarkerDiameter) so it doesn't compete visually with the players it sits
+    // among, and drawn with a basketball's seam pattern - one vertical seam, one horizontal seam, and two arcs
+    // bulging away from the vertical seam - instead of a flat dot, so it reads as "the ball" at a glance.
+    private const double BallDiameter = 12;
+    private static readonly Color BallColor = Color.Parse("#F58426");
+    private static readonly ISolidColorBrush BallFillBrush = new SolidColorBrush(BallColor);
+
+    private void AddBallMarker(double x, double y)
+    {
+        var left = x - (BallDiameter / 2);
+        var top = y - (BallDiameter / 2);
+
+        var ellipse = new Ellipse
+        {
+            Width = BallDiameter,
+            Height = BallDiameter,
+            Fill = BallFillBrush,
+            Stroke = Brushes.Black,
+            StrokeThickness = 0.75,
+        };
+        Canvas.SetLeft(ellipse, left);
+        Canvas.SetTop(ellipse, top);
+        MarkersCanvas.Children.Add(ellipse);
+
+        const double SeamThickness = 0.75;
+        var pole1 = new Point(x, top);
+        var pole2 = new Point(x, top + BallDiameter);
+        var bulgeRadius = BallDiameter * 0.28;
+
+        MarkersCanvas.Children.Add(new Line
+        {
+            StartPoint = pole1, EndPoint = pole2, Stroke = Brushes.Black, StrokeThickness = SeamThickness,
+        });
+        MarkersCanvas.Children.Add(new Line
+        {
+            StartPoint = new Point(left, y), EndPoint = new Point(left + BallDiameter, y),
+            Stroke = Brushes.Black, StrokeThickness = SeamThickness,
+        });
+        MarkersCanvas.Children.Add(CreateSeamArc(pole1, pole2, bulgeRadius, SweepDirection.Clockwise, SeamThickness));
+        MarkersCanvas.Children.Add(CreateSeamArc(pole1, pole2, bulgeRadius, SweepDirection.CounterClockwise, SeamThickness));
+    }
+
+    /// <summary>An arc from one pole of the ball to the other, bulging <paramref name="bulgeRadius"/> to one side of the vertical seam - one of the two curved seams of a basketball's texture.</summary>
+    private static Avalonia.Controls.Shapes.Path CreateSeamArc(Point pole1, Point pole2, double bulgeRadius, SweepDirection sweep, double thickness)
+    {
+        var figure = new PathFigure { StartPoint = pole1, IsClosed = false };
+        figure.Segments!.Add(new ArcSegment
+        {
+            Point = pole2,
+            Size = new Size(bulgeRadius, Math.Abs(pole2.Y - pole1.Y) / 2),
+            SweepDirection = sweep,
+            IsLargeArc = false,
+        });
+
+        var geometry = new PathGeometry();
+        geometry.Figures!.Add(figure);
+
+        return new Avalonia.Controls.Shapes.Path { Data = geometry, Stroke = Brushes.Black, StrokeThickness = thickness };
     }
 }

@@ -781,7 +781,23 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                     return new CourtMarker(court.X, court.Y, label, "player", teamDisplayColors[t.TrackId]);
                 });
 
-            markers = playerMarkers.ToList();
+            // The ball has no "feet" to plant on the court plane, so it's projected from its box center rather
+            // than a bottom-center point - an approximation that only holds while the ball is near the floor
+            // (e.g. a dribble), but is still the closest single point available without depth information.
+            // _lastOtherDetections can contain multiple Ball detections on a false-positive frame; only the
+            // most confident one is plotted, same "one marker per real-world object" intent as player markers.
+            var ballMarker = _lastOtherDetections
+                .Where(d => d.ClassName == "Ball")
+                .OrderByDescending(d => d.Confidence)
+                .Select(d =>
+                {
+                    var center = new ImagePoint((d.Left + d.Right) / 2, (d.Top + d.Bottom) / 2);
+                    var court = PointProjector.Project(calibration, center);
+                    return new CourtMarker(court.X, court.Y, null, "ball");
+                })
+                .FirstOrDefault();
+
+            markers = ballMarker is null ? playerMarkers.ToList() : [.. playerMarkers, ballMarker];
         }
 
         Dispatcher.UIThread.Post(() =>
