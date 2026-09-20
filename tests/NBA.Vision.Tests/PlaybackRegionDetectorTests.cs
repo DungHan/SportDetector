@@ -83,6 +83,23 @@ public class PlaybackRegionDetectorTests
     }
 
     [Fact]
+    public void TryGetRegion_BridgesSmallQuietGapBetweenTwoMovingRegions_ReturnsUnionBounds()
+    {
+        var detector = new PlaybackRegionDetector(gridWidth: 32, gridHeight: 18, minimumFrames: 10);
+
+        // Two flickering blocks separated by a 2-cell (20px) quiet gap, small enough to represent an on-court
+        // subject that's briefly still rather than a genuinely separate motion source - see
+        // PlaybackRegionDetector.ConnectivityBridgeRadius's doc comment.
+        AccumulateFlickeringRegion(detector, frameCount: 20, (100, 50, 60, 60), (180, 50, 60, 60));
+
+        Assert.True(detector.TryGetRegion(out var region));
+        Assert.Equal(100.0 / Width, region.X, precision: 3);
+        Assert.Equal(50.0 / Height, region.Y, precision: 3);
+        Assert.Equal(140.0 / Width, region.Width, precision: 3);
+        Assert.Equal(60.0 / Height, region.Height, precision: 3);
+    }
+
+    [Fact]
     public void TryGetRegion_WithNoMotionAtAll_ReturnsFalse()
     {
         var detector = new PlaybackRegionDetector(gridWidth: 32, gridHeight: 18, minimumFrames: 5);

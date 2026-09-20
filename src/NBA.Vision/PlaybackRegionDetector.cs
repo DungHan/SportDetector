@@ -13,6 +13,15 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
     /// <summary>Cells whose accumulated energy is below this fraction of the busiest cell's energy are treated as background noise.</summary>
     public const float ActivityThresholdRatio = 0.15f;
 
+    /// <summary>
+    /// Grid-cell radius used only to decide connectivity for the largest-component search, not the final
+    /// rectangle's bounds - bridges an on-court cell that happens to be quiet this sampling window (e.g. a
+    /// player who barely moved) so it doesn't fracture the game region into disconnected pieces that then lose
+    /// to a larger unrelated component. Small enough that a genuinely separate motion source elsewhere in the
+    /// frame (an autoplay thumbnail, a blinking icon) still isn't bridged in.
+    /// </summary>
+    private const int ConnectivityBridgeRadius = 2;
+
     private readonly float[] _previousCellLuma = new float[gridWidth * gridHeight];
     private readonly float[] _cellEnergy = new float[gridWidth * gridHeight];
     private bool _hasPrevious;
@@ -121,15 +130,16 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
 
     private bool TryFindLargestComponent(bool[] active, out int minX, out int minY, out int maxX, out int maxY)
     {
-        var visited = new bool[active.Length];
+        var connectivity = Dilate(active);
+        var visited = new bool[connectivity.Length];
         var queue = new Queue<int>();
         var bestSize = 0;
         minX = minY = maxX = maxY = 0;
         var bestFound = false;
 
-        for (var start = 0; start < active.Length; start++)
+        for (var start = 0; start < connectivity.Length; start++)
         {
-            if (!active[start] || visited[start])
+            if (!connectivity[start] || visited[start])
             {
                 continue;
             }
@@ -147,16 +157,23 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
                 var index = queue.Dequeue();
                 var cellX = index % gridWidth;
                 var cellY = index / gridWidth;
-                size++;
-                componentMinX = Math.Min(componentMinX, cellX);
-                componentMaxX = Math.Max(componentMaxX, cellX);
-                componentMinY = Math.Min(componentMinY, cellY);
-                componentMaxY = Math.Max(componentMaxY, cellY);
 
-                TryEnqueueNeighbor(cellX - 1, cellY, active, visited, queue);
-                TryEnqueueNeighbor(cellX + 1, cellY, active, visited, queue);
-                TryEnqueueNeighbor(cellX, cellY - 1, active, visited, queue);
-                TryEnqueueNeighbor(cellX, cellY + 1, active, visited, queue);
+                // The rectangle's bounds are measured from the original, undilated activity only - the
+                // dilated mask above exists solely to decide connectivity, so a bridged-but-quiet cell widens
+                // the component without itself stretching the reported bounds.
+                if (active[index])
+                {
+                    size++;
+                    componentMinX = Math.Min(componentMinX, cellX);
+                    componentMaxX = Math.Max(componentMaxX, cellX);
+                    componentMinY = Math.Min(componentMinY, cellY);
+                    componentMaxY = Math.Max(componentMaxY, cellY);
+                }
+
+                TryEnqueueNeighbor(cellX - 1, cellY, connectivity, visited, queue);
+                TryEnqueueNeighbor(cellX + 1, cellY, connectivity, visited, queue);
+                TryEnqueueNeighbor(cellX, cellY - 1, connectivity, visited, queue);
+                TryEnqueueNeighbor(cellX, cellY + 1, connectivity, visited, queue);
             }
 
             if (size > bestSize)
@@ -173,7 +190,50 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
         return bestFound;
     }
 
-    private void TryEnqueueNeighbor(int x, int y, bool[] active, bool[] visited, Queue<int> queue)
+    private bool[] Dilate(bool[] active)
+    {
+        var dilated = new bool[active.Length];
+        for (var y = 0; y < gridHeight; y++)
+        {
+            for (var x = 0; x < gridWidth; x++)
+            {
+                var index = (y * gridWidth) + x;
+                if (active[index])
+                {
+                    dilated[index] = true;
+                    continue;
+                }
+
+                for (var dy = -ConnectivityBridgeRadius; dy <= ConnectivityBridgeRadius && !dilated[index]; dy++)
+                {
+                    var ny = y + dy;
+                    if (ny < 0 || ny >= gridHeight)
+                    {
+                        continue;
+                    }
+
+                    for (var dx = -ConnectivityBridgeRadius; dx <= ConnectivityBridgeRadius; dx++)
+                    {
+                        var nx = x + dx;
+                        if (nx < 0 || nx >= gridWidth)
+                        {
+                            continue;
+                        }
+
+                        if (active[(ny * gridWidth) + nx])
+                        {
+                            dilated[index] = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        return dilated;
+    }
+
+    private void TryEnqueueNeighbor(int x, int y, bool[] connectivity, bool[] visited, Queue<int> queue)
     {
         if (x < 0 || x >= gridWidth || y < 0 || y >= gridHeight)
         {
@@ -181,7 +241,7 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
         }
 
         var index = (y * gridWidth) + x;
-        if (!active[index] || visited[index])
+        if (!connectivity[index] || visited[index])
         {
             return;
         }
