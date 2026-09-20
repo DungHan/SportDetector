@@ -105,6 +105,10 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
         if (!TryLongestActiveRun(columnEnergy, out var minX, out var maxX) ||
             !TryLongestActiveRun(rowEnergy, out var minY, out var maxY))
         {
+            // TEMPORARY diagnostic (remove once the "region drifts wide on one axis, narrow on the other"
+            // investigation is done): dumps both axes' full energy profile so a bad run selection can be seen
+            // directly instead of guessed at from the resulting (wrong) rectangle alone.
+            Console.WriteLine($"[playback-region] no active run found - columnEnergy={FormatEnergy(columnEnergy)} rowEnergy={FormatEnergy(rowEnergy)}");
             return false;
         }
 
@@ -113,6 +117,11 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
             Y: (double)minY / gridHeight,
             Width: (double)(maxX - minX + 1) / gridWidth,
             Height: (double)(maxY - minY + 1) / gridHeight);
+
+        Console.WriteLine(
+            $"[playback-region] resolved x=[{minX}..{maxX}]/{gridWidth} y=[{minY}..{maxY}]/{gridHeight} " +
+            $"region={region.X:F3},{region.Y:F3},{region.Width:F3}x{region.Height:F3} " +
+            $"columnEnergy={FormatEnergy(columnEnergy)} rowEnergy={FormatEnergy(rowEnergy)}");
         return true;
     }
 
@@ -167,5 +176,18 @@ public sealed class PlaybackRegionDetector(int gridWidth = 32, int gridHeight = 
         }
 
         return bestLength > 0;
+    }
+
+    // TEMPORARY diagnostic helper (see TryGetRegion) - normalizes each axis entry against that axis's own max
+    // so the printed profile is a readable 0-100 scale regardless of absolute energy magnitude.
+    private static string FormatEnergy(float[] axisEnergy)
+    {
+        var max = axisEnergy.Length > 0 ? axisEnergy.Max() : 0f;
+        if (max <= 0f)
+        {
+            return "[" + string.Join(",", axisEnergy.Select(_ => "0")) + "]";
+        }
+
+        return "[" + string.Join(",", axisEnergy.Select(e => (int)MathF.Round(e / max * 100))) + "]";
     }
 }
