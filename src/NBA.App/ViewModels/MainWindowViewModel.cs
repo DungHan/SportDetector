@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Windows.Input;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
@@ -73,6 +74,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly RelayCommand _reclassifyCommand;
     private readonly int _detectionIntervalFrames;
     private int _frameCounter;
+    private long _perfFrameSequence;
+    private DateTimeOffset? _perfLastFrameArrivedAt;
 
     public MainWindowViewModel(
         IFrameSource frameSource,
@@ -275,9 +278,32 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             (bottom - top) / referenceHeight);
     }
 
+    // Temporary diagnostic instrumentation for the "detection lags behind playback" investigation - reports
+    // this handler's own wall-clock cost and the gap since it was last invoked (the two numbers that together
+    // bound how stale the raw overlay/minimap can look), plus a per-stage breakdown logged inline in
+    // ProcessFrame below (tagged with the same #{sequence} so a run's lines can be correlated). Remove once
+    // the pipeline is fast enough that this isn't needed to know where time is going.
     private void OnFrameArrived(object? sender, FrameArrivedEventArgs e)
     {
-        var frame = e.Frame;
+        var sequence = ++_perfFrameSequence;
+        var now = DateTimeOffset.UtcNow;
+        var gapMs = _perfLastFrameArrivedAt is { } lastArrivedAt ? (now - lastArrivedAt).TotalMilliseconds : (double?)null;
+        _perfLastFrameArrivedAt = now;
+
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            ProcessFrame(e.Frame, sequence);
+        }
+        finally
+        {
+            var gapText = gapMs is { } gap ? $"{gap:F0}ms" : "n/a";
+            Console.WriteLine($"[perf#{sequence}] handler total={stopwatch.ElapsedMilliseconds}ms gap-since-previous={gapText}");
+        }
+    }
+
+    private void ProcessFrame(CapturedFrame frame, long sequence)
+    {
         var bitmap = FrameBitmapConverter.ToWriteableBitmap(frame);
 
         // Auto-detects the sub-rectangle that's actually gameplay versus surrounding page chrome (YouTube
@@ -323,9 +349,11 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             if (needsClassification && frame.Timestamp - _lastSportClassificationCheckAt >= SportClassificationRetryInterval)
             {
                 _lastSportClassificationCheckAt = frame.Timestamp;
+                var classifyStopwatch = Stopwatch.StartNew();
                 var classification = _sportCoordinator.ClassifyOrGetCached(
                     sourceKeyForClassification,
                     () => new SportClassificationCoordinator.FrameSnapshot(frame.Pixels.ToArray(), frame.Width, frame.Height, frame.Stride));
+                Console.WriteLine($"[perf#{sequence}] classify={classifyStopwatch.ElapsedMilliseconds}ms");
                 ApplyClassification(sourceKeyForClassification, classification);
                 needsClassification = classification.Status == SportClassificationStatus.Unknown;
             }
@@ -357,6 +385,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             && frame.Timestamp - _lastKeypointCheckAt >= KeypointDetectionInterval)
         {
             _lastKeypointCheckAt = frame.Timestamp;
+            var keypointStopwatch = Stopwatch.StartNew();
 
             // A hard scene/camera cut (e.g. a highlight reel cutting to a different game/arena/camera angle
             // within the same continuous capture source) means any calibration already saved for this source
@@ -408,6 +437,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             {
                 Console.WriteLine($"[auto-calibrate] {calibrationAttempt.FailureReason}");
             }
+
+            Console.WriteLine($"[perf#{sequence}] keypoints={keypointStopwatch.ElapsedMilliseconds}ms");
         }
 
         // Opt-in (off by default - see KeypointDetectionSettingsViewModel.RequireKeypointsBeforeObjectDetection):
@@ -440,6 +471,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         IReadOnlyList<TrackedPlayer> trackedPlayers;
         if (isDetectionFrame)
         {
+            var detectStopwatch = Stopwatch.StartNew();
+
             // Two separate inference passes, over two separate trained models: _multiClassObjectDetector
             // (Player/Ref) and _ballDetector (Ball-only) - the player-detection export no longer includes a
             // "Ball" class, so there's no longer a single shared model both can come from. Both results come
@@ -486,6 +519,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             // unlabeled per-frame foot-point.
             trackedPlayers = _playerTracker.Update(fullFrameResult.Players);
             _lastOtherDetections = fullFrameResult.Others;
+
+            Console.WriteLine($"[perf#{sequence}] detect={detectStopwatch.ElapsedMilliseconds}ms players={fullFrameResult.Players.Count}");
         }
         else
         {
@@ -509,6 +544,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         // below (design.md's "lets vote counts warm up from the moment a track exists"), so a resolved number
         // is already available the moment calibration completes. A plain loop (not LINQ) because
         // frame.Pixels.Span is a ref struct and can't be captured into a lambda's closure.
+        var jerseyOcrStopwatch = Stopwatch.StartNew();
         var jerseyNumberResults = new List<(int TrackId, JerseyNumberRecognitionResult Result)>(trackedPlayers.Count);
         foreach (var t in trackedPlayers)
         {
@@ -524,6 +560,11 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             }
 
             jerseyNumberResults.Add((t.TrackId, jerseyResult));
+        }
+
+        if (trackedPlayers.Count > 0)
+        {
+            Console.WriteLine($"[perf#{sequence}] jerseyOcr={jerseyOcrStopwatch.ElapsedMilliseconds}ms players={trackedPlayers.Count} avgPerPlayer={jerseyOcrStopwatch.ElapsedMilliseconds / (double)trackedPlayers.Count:F1}ms");
         }
 
         var resolvedJerseyNumbers = _jerseyNumberVoteAggregator.Update(jerseyNumberResults);
@@ -552,6 +593,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         if (frame.Timestamp - _lastScoreboardCheckAt >= TimeSpan.FromSeconds(1))
         {
             _lastScoreboardCheckAt = frame.Timestamp;
+            var scoreboardStopwatch = Stopwatch.StartNew();
             try
             {
                 // Manual override always wins outright (so a user's fix for a source where automatic placement
@@ -577,6 +619,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             {
                 Console.WriteLine($"[scoreboard-ocr] recognition failed for this frame, keeping last known state: {ex.Message}");
             }
+
+            Console.WriteLine($"[perf#{sequence}] scoreboardOcr={scoreboardStopwatch.ElapsedMilliseconds}ms");
         }
 
         // isConfidentSport was already established above (before keypoint detection ran) - RecognizedButUnsupported
