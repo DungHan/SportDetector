@@ -303,16 +303,23 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             }
 
             var upperBody = UpperBodyColorSampling.UpperBodyRectangle(p.Left, p.Top, p.Right, p.Bottom);
-            var sample = FrameCropper.Crop(crop.Pixels, crop.Width, crop.Height, crop.Stride,
-                upperBody.Left / crop.Width, upperBody.Top / crop.Height,
-                (upperBody.Right - upperBody.Left) / crop.Width, (upperBody.Bottom - upperBody.Top) / crop.Height);
-            if (sample.Width > 0 && sample.Height > 0)
+            if (upperBody is { } rect)
             {
-                FrameBitmapConverter.ToWriteableBitmap(sample.Pixels, sample.Width, sample.Height, sample.Stride)
-                    .Save(Path.Combine(dir, $"dump{_colorDebugDumpCount}_p{i}_sample.png"));
-            }
+                var sample = FrameCropper.Crop(crop.Pixels, crop.Width, crop.Height, crop.Stride,
+                    rect.Left / crop.Width, rect.Top / crop.Height,
+                    (rect.Right - rect.Left) / crop.Width, (rect.Bottom - rect.Top) / crop.Height);
+                if (sample.Width > 0 && sample.Height > 0)
+                {
+                    FrameBitmapConverter.ToWriteableBitmap(sample.Pixels, sample.Width, sample.Height, sample.Stride)
+                        .Save(Path.Combine(dir, $"dump{_colorDebugDumpCount}_p{i}_sample.png"));
+                }
 
-            Console.WriteLine($"[color-debug] p{i} box=({p.Left:F0},{p.Top:F0},{p.Right:F0},{p.Bottom:F0}) sample=({upperBody.Left:F0},{upperBody.Top:F0},{upperBody.Right:F0},{upperBody.Bottom:F0})");
+                Console.WriteLine($"[color-debug] p{i} box=({p.Left:F0},{p.Top:F0},{p.Right:F0},{p.Bottom:F0}) sample=({rect.Left:F0},{rect.Top:F0},{rect.Right:F0},{rect.Bottom:F0})");
+            }
+            else
+            {
+                Console.WriteLine($"[color-debug] p{i} box=({p.Left:F0},{p.Top:F0},{p.Right:F0},{p.Bottom:F0}) sample=skipped (dive/degenerate aspect ratio)");
+            }
         }
     }
 

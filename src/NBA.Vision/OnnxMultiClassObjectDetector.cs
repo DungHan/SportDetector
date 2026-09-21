@@ -168,8 +168,9 @@ public sealed class OnnxMultiClassObjectDetector : IMultiClassObjectDetector, ID
             var bottom = transform.MapToSourceY(y2);
 
             var upperBody = UpperBodyColorSampling.UpperBodyRectangle(left, top, right, bottom);
-            var color = UpperBodyColorSampling.MeanColor(
-                bgra8Pixels, width, height, stride, upperBody.Left, upperBody.Top, upperBody.Right, upperBody.Bottom);
+            var color = upperBody is { } rect
+                ? UpperBodyColorSampling.DominantColor(bgra8Pixels, width, height, stride, rect.Left, rect.Top, rect.Right, rect.Bottom)
+                : null;
 
             players.Add(new PlayerDetection(left, top, right, bottom, confidence, color));
         }

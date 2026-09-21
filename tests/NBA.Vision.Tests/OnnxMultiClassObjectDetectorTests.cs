@@ -114,21 +114,22 @@ public class OnnxMultiClassObjectDetectorTests
     }
 
     [Fact]
-    public void Detect_SingleQualifyingBox_ReportsUpperBodyMeanColor()
+    public void Detect_SingleQualifyingBox_SquareFixtureBoxSkipsColorSampling()
     {
-        // Same setup as Detect_SingleQualifyingBox_ScalesCoordinatesIndependentlyByWidthAndHeight - box2
-        // qualifies. Every pixel in the source frame is the same solid color, so the upper-body sub-rectangle
-        // (whatever its exact bounds) must average to that exact color.
+        // box2 qualifies (see the fixture doc above), but every box this fixture emits is a normalized square
+        // (0.4x0.4 or 0.5x0.5 in model space) - and letterbox undoing scales both axes by the same factor, so a
+        // square box stays square in source pixels too, regardless of the source frame's own aspect ratio.
+        // A pixel aspect ratio of 1.0 is at/above UpperBodyColorSampling's dive threshold (0.75), so Detect must
+        // thread that all the way through as a null Color instead of sampling a meaningless rectangle - the
+        // sampled-value-is-correct case (a non-square, non-skipped box) is covered directly by
+        // UpperBodyColorSamplingTests, which isn't limited to this fixture's always-square boxes.
         using var detector = new OnnxMultiClassObjectDetector(FixturePath, TwoClassNames, inputSize: 4, inputName: "input");
         var pixels = SolidBgra8(8, 4, b: 255, g: 0, r: 0);
 
         var result = detector.Detect(pixels, width: 8, height: 4, stride: 8 * 4);
 
         var box = Assert.Single(result.Players);
-        Assert.True(box.Color.HasValue);
-        Assert.Equal(0, box.Color!.Value.R);
-        Assert.Equal(0, box.Color.Value.G);
-        Assert.Equal(255, box.Color.Value.B);
+        Assert.False(box.Color.HasValue);
     }
 
     [Fact]
