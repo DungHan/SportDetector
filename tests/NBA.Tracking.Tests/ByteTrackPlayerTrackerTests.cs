@@ -104,6 +104,35 @@ public class ByteTrackPlayerTrackerTests
     }
 
     [Fact]
+    public void AllConfirmedTracks_UnmatchedPastVisibilityLimit_StillReportsTrackUntilTerminated()
+    {
+        // AllConfirmedTracks exists precisely for a consumer that wants what Update/PredictOnly withhold past
+        // maxVisibleLostFrames (e.g. the minimap, which would rather fade a track than have it vanish) - it
+        // should keep surfacing the track, with a growing FramesSinceMatch, all the way up to maxLostFrames.
+        const int maxVisibleLostFrames = 2;
+        const int maxLostFrames = 10;
+        var tracker = new ByteTrackPlayerTracker(maxLostFrames: maxLostFrames, maxVisibleLostFrames: maxVisibleLostFrames, minimumConsecutiveFrames: 1);
+
+        var first = tracker.Update([Box(0, 0, 10, 10, 0.9f)]);
+        var trackId = Assert.Single(first).TrackId;
+
+        for (var missedFrame = 1; missedFrame < maxLostFrames; missedFrame++)
+        {
+            tracker.Update([]);
+
+            // Update itself withholds the track once missedFrame exceeds maxVisibleLostFrames (asserted above),
+            // but AllConfirmedTracks should keep reporting it the whole time it's still alive internally.
+            var allTracks = Assert.Single(tracker.AllConfirmedTracks);
+            Assert.Equal(trackId, allTracks.TrackId);
+            Assert.Equal(missedFrame, allTracks.FramesSinceMatch);
+        }
+
+        // One more miss reaches maxLostFrames - the track is now actually terminated, not just withheld.
+        tracker.Update([]);
+        Assert.Empty(tracker.AllConfirmedTracks);
+    }
+
+    [Fact]
     public void Update_FramesSinceMatch_ZeroWhenMatchedThisCall_PositiveWhileCoasting()
     {
         // A consumer that needs to distinguish "this frame's real detection" from "still shown but coasting on

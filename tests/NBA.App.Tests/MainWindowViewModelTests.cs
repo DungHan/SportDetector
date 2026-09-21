@@ -92,6 +92,8 @@ public class MainWindowViewModelTests : IDisposable
         }
 
         public void Reset() => ResetCallCount++;
+
+        public IReadOnlyList<TrackedPlayer> AllConfirmedTracks => Tracks;
     }
 
     private sealed class StubJerseyNumberRecognizer : IJerseyNumberRecognizer

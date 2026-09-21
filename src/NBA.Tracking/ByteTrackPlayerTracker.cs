@@ -243,8 +243,14 @@ public sealed class ByteTrackPlayerTracker(
     }
 
     /// <summary>Every confirmed live track, excluding unconfirmed candidates (still short of <paramref name="minimumConsecutiveFrames"/>) and those coasting on pure motion prediction past <paramref name="maxVisibleLostFrames"/> - see the type-level doc comment.</summary>
-    private IReadOnlyList<TrackedPlayer> ToVisiblePlayers() => _tracks
-        .Where(t => t.ConsecutiveMatches >= minimumConsecutiveFrames && t.LostFrames <= maxVisibleLostFrames)
+    private IReadOnlyList<TrackedPlayer> ToVisiblePlayers() =>
+        ProjectConfirmedTracks(t => t.LostFrames <= maxVisibleLostFrames);
+
+    /// <inheritdoc/>
+    public IReadOnlyList<TrackedPlayer> AllConfirmedTracks => ProjectConfirmedTracks(_ => true);
+
+    private IReadOnlyList<TrackedPlayer> ProjectConfirmedTracks(Func<Track, bool> filter) => _tracks
+        .Where(t => t.ConsecutiveMatches >= minimumConsecutiveFrames && filter(t))
         .Select(t => new TrackedPlayer(t.Id, t.LastBox.Left, t.LastBox.Top, t.LastBox.Right, t.LastBox.Bottom, t.LastConfidence, t.LostFrames, ToByteColor(t.Color)))
         .ToList();
 

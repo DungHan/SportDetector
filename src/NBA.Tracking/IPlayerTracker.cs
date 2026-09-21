@@ -19,4 +19,14 @@ public interface IPlayerTracker
 
     /// <summary>Terminates every live track and forgets all state - used when switching to an unrelated capture source, so track IDs don't carry over to a scene the tracker never saw.</summary>
     void Reset();
+
+    /// <summary>
+    /// Every confirmed track still alive internally, including ones coasting on motion prediction past the point
+    /// where <see cref="Update"/>/<see cref="PredictOnly"/> would withhold them (they only report a track through
+    /// a short occlusion buffer, to protect the raw overlay from a box drifting away on stale velocity - see
+    /// <c>ByteTrackPlayerTracker</c>'s type-level doc comment). A consumer that would rather keep showing a
+    /// track through a longer miss - fading it out itself via <see cref="TrackedPlayer.FramesSinceMatch"/>
+    /// instead of having it disappear outright (e.g. the minimap) - should read from here instead.
+    /// </summary>
+    IReadOnlyList<TrackedPlayer> AllConfirmedTracks { get; }
 }

@@ -77,6 +77,9 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     // minimap caps to this many, preferring tracks with a real match this frame over ones merely coasting.
     private const int MaxPlayersOnCourtSimultaneously = 10;
 
+    /// <summary>Minimap marker opacity for a track currently coasting on motion prediction (no real detection matched this frame) rather than terminated outright - see the player-marker block in <see cref="ProcessFrame"/>.</summary>
+    private const double FadedTrackOpacity = 0.4;
+
     private string? _currentSourceKey;
     private NormalizedRect? _currentPlaybackRegion;
     private DateTimeOffset _lastScoreboardCheckAt;
@@ -691,9 +694,15 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                         playerResult.Players,
                         [.. playerResult.Others, .. ballResult.Others]);
 
-                    var coloredCount = detectionResult.Players.Count(p => p.Color.HasValue);
-                    var sampleColors = string.Join(" ", detectionResult.Players.Take(5).Select(p => p.Color is { } c ? $"({c.R},{c.G},{c.B})" : "null"));
-                    Console.WriteLine($"[color-debug] players={detectionResult.Players.Count} colored={coloredCount} cropped={(playbackCrop is not null)} rgb={sampleColors}");
+                    var coloredCount = 0;
+                    foreach (var p in detectionResult.Players)
+                    {
+                        if (p.Color.HasValue)
+                        {
+                            coloredCount++;
+                        }
+                    }
+                    Console.WriteLine($"[color-debug] players={detectionResult.Players.Count} colored={coloredCount} cropped={(playbackCrop is not null)}");
 
                     if (playbackCrop is { } dumpCrop && _colorDebugDumpCount < 2)
                     {
@@ -754,9 +763,15 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                 // class still renders straight from _lastOtherDetections, unaffected.
                 _lastBallPosition = _ballTracker.Update(fullFrameResult.Others);
 
-                var trackedColoredCount = trackedPlayers.Count(t => t.Color.HasValue);
-                var trackedSampleColors = string.Join(" ", trackedPlayers.Take(5).Select(t => t.Color is { } c ? $"#{t.TrackId}=({c.R},{c.G},{c.B})" : $"#{t.TrackId}=null"));
-                Console.WriteLine($"[color-debug] tracked={trackedPlayers.Count} trackedColored={trackedColoredCount} rgb={trackedSampleColors}");
+                var trackedColoredCount = 0;
+                foreach (var t in trackedPlayers)
+                {
+                    if (t.Color.HasValue)
+                    {
+                        trackedColoredCount++;
+                    }
+                }
+                Console.WriteLine($"[color-debug] tracked={trackedPlayers.Count} trackedColored={trackedColoredCount}");
 
                 Console.WriteLine($"[perf#{sequence}] detect={detectStopwatch.ElapsedMilliseconds}ms players={fullFrameResult.Players.Count}");
             }
@@ -918,8 +933,14 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             // positions"). Carries the track's own color snapped to one of this frame's two team-color clusters
             // (see AssignTeamDisplayColors) so MinimapView.axaml.cs fills every player on a team with the same
             // color instead of each track's own independently-drifted shade.
-            var teamDisplayColors = AssignTeamDisplayColors(trackedPlayers);
-            var playerMarkers = trackedPlayers
+            //
+            // Sourced from IPlayerTracker.AllConfirmedTracks rather than trackedPlayers (the raw overlay's
+            // stricter, occlusion-buffer-limited set) - a player whose detection briefly fails shouldn't just
+            // vanish from the minimap the way a stale box would from the raw overlay; instead it keeps its last
+            // known court position, faded by FadedTrackOpacity, until the tracker actually terminates the track.
+            var allTracks = _playerTracker.AllConfirmedTracks;
+            var teamDisplayColors = AssignTeamDisplayColors(allTracks);
+            var playerMarkers = allTracks
                 .OrderBy(t => t.FramesSinceMatch)
                 .ThenByDescending(t => t.Confidence)
                 .Take(MaxPlayersOnCourtSimultaneously)
@@ -928,7 +949,8 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                     var footPoint = new ImagePoint((t.Left + t.Right) / 2, t.Bottom);
                     var court = PointProjector.Project(calibration, footPoint);
                     var label = resolvedJerseyNumbers.TryGetValue(t.TrackId, out var number) ? $"#{number}" : $"#{t.TrackId}";
-                    return new CourtMarker(court.X, court.Y, label, "player", teamDisplayColors[t.TrackId]);
+                    var opacity = t.FramesSinceMatch > 0 ? FadedTrackOpacity : 1.0;
+                    return new CourtMarker(court.X, court.Y, label, "player", teamDisplayColors[t.TrackId], opacity);
                 });
 
             // The ball has no "feet" to plant on the court plane, so it's projected from its box center rather

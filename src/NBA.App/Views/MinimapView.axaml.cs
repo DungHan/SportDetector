@@ -78,6 +78,7 @@ public partial class MinimapView : UserControl
                 Fill = new SolidColorBrush(fillColor),
                 Stroke = Brushes.Black,
                 StrokeThickness = 1,
+                Opacity = visual.Opacity,
             };
             Canvas.SetLeft(ellipse, visual.X - (MarkerDiameter / 2));
             Canvas.SetTop(ellipse, visual.Y - (MarkerDiameter / 2));
@@ -93,6 +94,7 @@ public partial class MinimapView : UserControl
                     Foreground = ReadableTextColorFor(fillColor),
                     Width = MarkerDiameter,
                     TextAlignment = TextAlignment.Center,
+                    Opacity = visual.Opacity,
                 };
                 Canvas.SetLeft(text, visual.X - (MarkerDiameter / 2));
                 Canvas.SetTop(text, visual.Y - 6); // Vertically centers a 9pt line within the circle.
