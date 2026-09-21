@@ -960,17 +960,20 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                     return new CourtMarker(court.X, court.Y, label, "player", teamDisplayColors[t.TrackId], opacity);
                 });
 
-            // The ball has no "feet" to plant on the court plane, so it's projected from its box center rather
-            // than a bottom-center point - an approximation that only holds while the ball is near the floor
-            // (e.g. a dribble), but is still the closest single point available without depth information.
+            // The homography only maps points that lie on the court's ground plane, so the ball is projected
+            // from its box's bottom-center - the point closest to floor contact - rather than its box center,
+            // mirroring the player foot-point logic above. This is still only exact while the ball is on or
+            // near the floor (e.g. a dribble); an airborne ball has no floor-contact pixel to feed the
+            // homography, so its minimap position will drift up in the air, but staying at "the ball's
+            // lowest visible point" keeps that drift as small as a single-view homography allows.
             // Sourced from _lastBallPosition (tracking/ball-tracking's smoothed/coasted output) rather than
             // scanning _lastOtherDetections directly - the tracker already picks the single highest-confidence
             // Ball detection per attempt internally.
             CourtMarker? ballMarker = null;
             if (_lastBallPosition is { } ballPosition)
             {
-                var center = new ImagePoint((ballPosition.Left + ballPosition.Right) / 2, (ballPosition.Top + ballPosition.Bottom) / 2);
-                var court = PointProjector.Project(calibration, center);
+                var floorPoint = new ImagePoint((ballPosition.Left + ballPosition.Right) / 2, ballPosition.Bottom);
+                var court = PointProjector.Project(calibration, floorPoint);
                 ballMarker = new CourtMarker(court.X, court.Y, null, "ball");
             }
 
