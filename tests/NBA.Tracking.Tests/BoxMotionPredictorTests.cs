@@ -29,4 +29,29 @@ public class BoxMotionPredictorTests
         Assert.Equal(10.0, predicted.Right - predicted.Left, precision: 0);
         Assert.Equal(20.0, predicted.Bottom - predicted.Top, precision: 0);
     }
+
+    [Fact]
+    public void Correct_ReturnsBlendedBox_BetweenPredictedAndRawMeasurement()
+    {
+        // A stationary box observed a few times to build up filter confidence, then one jittery outlier
+        // measurement well off to the side - the corrected box returned should land strictly between where
+        // the filter already believed the box was (predicted) and the raw jittery measurement, not equal to
+        // either.
+        var predictor = new BoxMotionPredictor();
+        var stationaryBox = (Left: 100.0, Top: 100.0, Right: 150.0, Bottom: 200.0);
+
+        for (var step = 0; step < 5; step++)
+        {
+            predictor.Predict();
+            predictor.Correct(stationaryBox);
+        }
+
+        var predicted = predictor.Predict();
+        var jitteryMeasurement = (Left: 140.0, Top: 100.0, Right: 190.0, Bottom: 200.0);
+        var corrected = predictor.Correct(jitteryMeasurement);
+
+        Assert.True(corrected.Left > predicted.Left && corrected.Left < jitteryMeasurement.Left,
+            $"expected corrected Left ({corrected.Left}) strictly between predicted ({predicted.Left}) and raw measurement ({jitteryMeasurement.Left})");
+        Assert.NotEqual(jitteryMeasurement.Left, corrected.Left);
+    }
 }

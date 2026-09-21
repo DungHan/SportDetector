@@ -258,8 +258,7 @@ public sealed class ByteTrackPlayerTracker(
     private void ApplyMatch(Track track, PlayerDetection detection)
     {
         var box = ToBox(detection);
-        track.Predictor.Correct(box);
-        track.LastBox = box;
+        track.LastBox = track.Predictor.Correct(box);
         track.LastConfidence = detection.Confidence;
         track.LostFrames = 0;
         track.ConsecutiveMatches++;
@@ -319,7 +318,7 @@ public sealed class ByteTrackPlayerTracker(
         /// <summary>This frame-step's motion-predicted box (computed once per <see cref="Update"/> call, before association).</summary>
         public required (double Left, double Top, double Right, double Bottom) PredictedBox { get; set; }
 
-        /// <summary>The box reported for this track this frame: the matched detection's box, or - while unmatched but still within the occlusion buffer - the motion-predicted box.</summary>
+        /// <summary>The box reported for this track this frame: a Kalman-smoothed blend of the matched detection's box with the pre-match predicted box (see <see cref="ApplyMatch"/>), or - while unmatched but still within the occlusion buffer - the pure motion-predicted box.</summary>
         public required (double Left, double Top, double Right, double Bottom) LastBox { get; set; }
 
         public required float LastConfidence { get; set; }

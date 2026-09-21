@@ -949,6 +949,51 @@ public class MainWindowViewModelTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task FrameArrived_BallDetectionMissingForOneFrame_StillRendersCoastedBallMarker()
+    {
+        // tracking/ball-tracking's "coast through brief missed detections" requirement, exercised through
+        // vision/on-court-object-detection's "Ball detections are rendered from ball-tracking's smoothed
+        // output" requirement - a single missed detection attempt (well within the tracker's default coast
+        // bound) must not make the ball marker disappear from the raw view.
+        var frameSource = new FakeFrameSource();
+        var store = new FileSourceProfileStore(_directory);
+        var ballDetector = new StubMultiClassObjectDetector
+        {
+            OtherDetections = [new OnCourtObjectDetection(1, 2, 3, 4, 0.9f, "Ball")],
+        };
+        await using var viewModel = new MainWindowViewModel(
+            frameSource,
+            new FakeCaptureSourceEnumerator([SourceA]),
+            new SportClassificationCoordinator(new StubClassifier(new SportClassifierOutput(SportType.Basketball, 0.95f)), store),
+            new CourtCalibrationCoordinator(store),
+            new NullCourtKeypointDetector(SportType.Basketball),
+            new StubMultiClassObjectDetector(),
+            new ByteTrackPlayerTracker(),
+            new NullScoreboardOcrEngine(),
+            store,
+            new NullJerseyNumberRecognizer(),
+            new PluralityJerseyNumberVoteAggregator(),
+            new PlaybackRegionCoordinator(store),
+            ballDetector: ballDetector,
+            detectionIntervalFrames: 1);
+        await Task.Delay(50);
+
+        frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        Assert.Contains(viewModel.RawOverlay.Annotations, a => a.Label == "Ball");
+
+        // This attempt's detection pass returns no Ball detection at all - the tracker should still coast on
+        // its motion prediction (velocity is zero after only one prior measurement, so the coasted box lands
+        // exactly where the last real detection was) rather than the marker vanishing.
+        ballDetector.OtherDetections = [];
+        frameSource.PublishFrame(MakeFrame());
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var coastedBall = Assert.Single(viewModel.RawOverlay.Annotations, a => a.Label == "Ball");
+        Assert.Equal([(1.0, 2.0), (3.0, 4.0)], coastedBall.Points);
+    }
+
+    [AvaloniaFact]
     public async Task FrameArrived_OnDetectionFrame_MergesBallDetectorOthersWithPlayerDetectorOthers()
     {
         // The player/referee model and the ball model are two separate trained models behind two separate

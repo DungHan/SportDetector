@@ -177,6 +177,11 @@ public partial class App : Application
                 // velocity estimate to visibly drift. Tightened to bail out after 1 miss.
                 maxVisibleLostFrames: 1);
 
+            // Same posture as playerTracker above - a pure algorithm over already-in-memory boxes, not backed
+            // by an external model file, so it's always wired unconditionally (see design.md in
+            // openspec/changes/smooth-tracked-object-overlays/).
+            IBallTracker ballTracker = new BallTracker();
+
             // No trained jersey-number recognition model is shipped in this change yet (see design.md's risk
             // entries) - falls back to the degraded always-unrecognized path. PluralityJerseyNumberVoteAggregator
             // is a pure algorithm over already-in-memory results, not backed by an external model file, so it's
@@ -208,6 +213,7 @@ public partial class App : Application
                 jerseyNumberVoteAggregator,
                 new PlaybackRegionCoordinator(profileStore),
                 ballDetector: ballDetector,
+                ballTracker: ballTracker,
                 // Confirmed (by testing detectionIntervalFrames: 1) that PredictOnly()'s pure motion
                 // extrapolation between detections was the main source of "flying" boxes - every-frame
                 // detection fixed it but was too expensive (visible lag). Settling on every-2nd-frame as a

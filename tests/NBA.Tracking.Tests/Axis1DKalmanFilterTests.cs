@@ -53,4 +53,25 @@ public class Axis1DKalmanFilterTests
         Assert.True(lastError < firstError,
             $"expected prediction error to shrink as more observations arrive: first={firstError}, last={lastError}");
     }
+
+    [Fact]
+    public void Position_AfterCorrect_MatchesTheGainBlendedEstimate_WithoutAdvancing()
+    {
+        var filter = new Axis1DKalmanFilter();
+        filter.Correct(0);
+
+        // Predict() before this Correct() call already advanced the state to some prior estimate; Correct()
+        // then blends that prior estimate with the new measurement (10) by the Kalman gain - somewhere between
+        // the two, not equal to either. Position should report exactly that blended value, unchanged by simply
+        // reading it back (no further Predict() call).
+        var priorEstimate = filter.Predict();
+        filter.Correct(10);
+        var corrected = filter.Position;
+
+        Assert.True(corrected > priorEstimate && corrected < 10,
+            $"expected the corrected estimate ({corrected}) strictly between the prior prediction ({priorEstimate}) and the new measurement (10)");
+
+        // Reading Position again (no Predict()/Correct() in between) must be stable.
+        Assert.Equal(corrected, filter.Position);
+    }
 }

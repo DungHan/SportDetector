@@ -24,12 +24,18 @@ public sealed class BoxMotionPredictor
         return (cx - (w / 2), cy - (h / 2), cx + (w / 2), cy + (h / 2));
     }
 
-    /// <summary>Feeds back an observed box, correcting the motion model's state.</summary>
-    public void Correct((double Left, double Top, double Right, double Bottom) box)
+    /// <summary>Feeds back an observed box, correcting the motion model's state, and returns the corrected (filtered) box - a variance-weighted blend of the pre-correction predicted box and the observed one, not the observed box verbatim.</summary>
+    public (double Left, double Top, double Right, double Bottom) Correct((double Left, double Top, double Right, double Bottom) box)
     {
         _cx.Correct((box.Left + box.Right) / 2);
         _cy.Correct((box.Top + box.Bottom) / 2);
         _w.Correct(box.Right - box.Left);
         _h.Correct(box.Bottom - box.Top);
+
+        var cx = _cx.Position;
+        var cy = _cy.Position;
+        var w = _w.Position;
+        var h = _h.Position;
+        return (cx - (w / 2), cy - (h / 2), cx + (w / 2), cy + (h / 2));
     }
 }

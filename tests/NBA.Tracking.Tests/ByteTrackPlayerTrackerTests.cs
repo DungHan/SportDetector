@@ -309,13 +309,15 @@ public class ByteTrackPlayerTrackerTests
         // Same shape as the mismatch test above, but colors line up with each track's own seeded color.
         var result = tracker.Update([Box(1, 1, 11, 11, 0.9f, Red), Box(501, 501, 511, 511, 0.9f, Blue)]);
 
-        // Normal IoU association proceeds: same two track IDs, no new tracks spawned, boxes updated to the
-        // exact matched detection boxes (proving a real match happened, not just unmatched coasting).
+        // Normal IoU association proceeds: same two track IDs, no new tracks spawned, boxes moved toward the
+        // newly matched detection (smoothed - see tracking/player-tracking's "report a smoothed track
+        // position" requirement - rather than exactly equal to either the old spawn position or the raw
+        // detection, which still proves a real match happened rather than unmatched coasting).
         Assert.Equal(2, result.Count);
         var trackA = Assert.Single(result, t => t.TrackId == trackAId);
         var trackB = Assert.Single(result, t => t.TrackId == trackBId);
-        Assert.Equal(1, trackA.Left);
-        Assert.Equal(501, trackB.Left);
+        Assert.True(trackA.Left > 0 && trackA.Left <= 1, $"expected trackA to move toward the new detection (1), got {trackA.Left}");
+        Assert.True(trackB.Left > 500 && trackB.Left <= 501, $"expected trackB to move toward the new detection (501), got {trackB.Left}");
     }
 
     [Fact]
@@ -332,7 +334,8 @@ public class ByteTrackPlayerTrackerTests
 
         var track = Assert.Single(result);
         Assert.Equal(trackAId, track.TrackId);
-        Assert.Equal(1, track.Left); // matched to the new box despite the color mismatch
+        // Matched to the new box despite the color mismatch - moved toward it (smoothed), not stuck at 0.
+        Assert.True(track.Left > 0 && track.Left <= 1, $"expected track to move toward the new box (1), got {track.Left}");
     }
 
     [Fact]
@@ -351,7 +354,8 @@ public class ByteTrackPlayerTrackerTests
         var result = tracker.Update([Box(1, 1, 11, 11, 0.9f, nearBlue1), Box(900, 900, 910, 910, 0.9f, nearBlue2)]);
 
         var trackA = Assert.Single(result, t => t.TrackId == trackAId);
-        Assert.Equal(1, trackA.Left); // matched despite the color mismatch, since the veto was inactive
+        // Matched despite the color mismatch, since the veto was inactive - moved toward the new box (smoothed).
+        Assert.True(trackA.Left > 0 && trackA.Left <= 1, $"expected trackA to move toward the new box (1), got {trackA.Left}");
     }
 
     [Fact]
@@ -554,5 +558,56 @@ public class ByteTrackPlayerTrackerTests
         var result = tracker.Update([Box(0, 0, 10, 10, 0.9f), Box(6, 0, 16, 10, 0.9f)]);
 
         Assert.Equal(2, result.Count);
+    }
+
+    [Fact]
+    public void Update_JitteringStationaryDetections_ReportedBoxVarianceSmallerThanInputVariance()
+    {
+        // A "stationary" player whose raw per-frame detection box jitters +/-3 around a fixed point (typical
+        // detector noise) - tracking/player-tracking's "report a smoothed track position" requirement expects
+        // the reported box to damp that noise, not reproduce it.
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
+        double[] jitter = [3, -2, 2, -3, 1, -1, 3, -2, 2, -3];
+
+        var reportedLefts = new List<double>();
+        foreach (var offset in jitter)
+        {
+            var result = tracker.Update([Box(100 + offset, 100, 150 + offset, 200, 0.9f)]);
+            reportedLefts.Add(Assert.Single(result).Left);
+        }
+
+        var inputLefts = jitter.Select(j => 100 + j).ToList();
+        Assert.True(Variance(reportedLefts) < Variance(inputLefts),
+            $"expected reported-box variance ({Variance(reportedLefts)}) below raw-detection variance ({Variance(inputLefts)})");
+    }
+
+    [Fact]
+    public void Update_SteadyLinearMotion_ReportedBoxDoesNotVisiblyLagBehindTrueMotion()
+    {
+        // A player moving at a constant 4 units/frame-step - tracking/player-tracking's "steady motion, no
+        // visible lag" scenario expects the smoothed box to keep up with real motion, not trail behind by more
+        // than a small bound once the filter has had a few frames to pick up the velocity.
+        var tracker = new ByteTrackPlayerTracker(minimumConsecutiveFrames: 1);
+        const double velocity = 4.0;
+        const double lagBound = 3.0;
+
+        for (var step = 0; step <= 10; step++)
+        {
+            var trueLeft = step * velocity;
+            var result = tracker.Update([Box(trueLeft, 0, trueLeft + 10, 10, 0.9f)]);
+            var reportedLeft = Assert.Single(result).Left;
+
+            if (step >= 3)
+            {
+                Assert.True(Math.Abs(reportedLeft - trueLeft) <= lagBound,
+                    $"step {step}: expected reported Left ({reportedLeft}) within {lagBound} of true Left ({trueLeft})");
+            }
+        }
+    }
+
+    private static double Variance(IReadOnlyList<double> values)
+    {
+        var mean = values.Average();
+        return values.Sum(v => (v - mean) * (v - mean)) / values.Count;
     }
 }

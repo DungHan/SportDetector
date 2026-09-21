@@ -13,6 +13,9 @@ public sealed class Axis1DKalmanFilter(double processNoise = 1e-2, double measur
     private double _p00 = 1, _p01, _p11 = 1;
     private bool _initialized;
 
+    /// <summary>The filter's current position estimate - whatever the last <see cref="Predict"/> or <see cref="Correct"/> call left it at - without advancing the state. 0 until the first <see cref="Correct"/> call.</summary>
+    public double Position => _position;
+
     /// <summary>Advances the state by one frame-step (constant-velocity extrapolation) and returns the predicted position. A no-op returning 0 until the first <see cref="Correct"/> call.</summary>
     public double Predict()
     {

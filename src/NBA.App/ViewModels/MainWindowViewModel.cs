@@ -29,6 +29,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private readonly ICourtKeypointDetector _keypointDetector;
     private readonly IMultiClassObjectDetector _multiClassObjectDetector;
     private readonly IPlayerTracker _playerTracker;
+    private readonly IBallTracker _ballTracker;
     private readonly IMultiClassObjectDetector _ballDetector;
     private readonly IScoreboardOcrEngine _scoreboardOcr;
     private readonly ISourceProfileStore _profileStore;
@@ -86,6 +87,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private double[]? _lastKeypointSceneSignature;
     private DateTimeOffset _lastKeypointDetectionAt;
     private IReadOnlyList<TrackedPlayer> _lastTrackedPlayers = [];
+    private BallPosition? _lastBallPosition;
     private IReadOnlyList<OnCourtObjectDetection> _lastOtherDetections = [];
     private NormalizedRect? _lastScoreboardObjectRegion;
     private readonly RelayCommand _reclassifyCommand;
@@ -113,6 +115,12 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         // defaults to the same "no model/no signal" degraded posture NullMultiClassObjectDetector already
         // gives multiClassObjectDetector when its own model file is absent.
         IMultiClassObjectDetector? ballDetector = null,
+        // Optional for the same reason ballDetector is: most existing call sites predate ball tracking and
+        // don't care about it specifically. Defaults to a real BallTracker (not a null-object) - unlike the
+        // detectors above, this is a pure algorithm over already-in-memory boxes with no missing-model
+        // degraded path (same posture as playerTracker/ByteTrackPlayerTracker), so there is nothing to
+        // degrade to.
+        IBallTracker? ballTracker = null,
         int detectionIntervalFrames = 3)
     {
         _frameSource = frameSource;
@@ -122,6 +130,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _multiClassObjectDetector = multiClassObjectDetector;
         _playerTracker = playerTracker;
         _ballDetector = ballDetector ?? new NullMultiClassObjectDetector();
+        _ballTracker = ballTracker ?? new BallTracker();
         _scoreboardOcr = scoreboardOcr;
         _profileStore = profileStore;
         _jerseyNumberRecognizer = jerseyNumberRecognizer;
@@ -218,6 +227,10 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         // Track IDs are only meaningful within one continuous view of a source - an unrelated source switch
         // must not carry stale identities into a scene the tracker never saw (tracking/player-tracking spec).
         _playerTracker.Reset();
+
+        // Same reasoning as _playerTracker.Reset() above - the ball's filtered position has no relationship
+        // to an unrelated source's own ball.
+        _ballTracker.Reset();
 
         // Reset alongside the tracker so a fresh source's first frame is always a real detection frame (index 0),
         // not partway through a stale cadence cycle left over from the previous source.
@@ -543,6 +556,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                 // just fails to match anything in the new scene) alongside freshly spawned tracks for the new
                 // clip's actual players, so the minimap doubles up: real players plus their old clip's ghosts.
                 _playerTracker.Reset();
+                _ballTracker.Reset();
             }
             _lastSceneSignature = sceneSignature;
 
@@ -734,6 +748,12 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                 trackedPlayers = _playerTracker.Update(fullFrameResult.Players);
                 _lastOtherDetections = fullFrameResult.Others;
 
+                // vision/on-court-object-detection's "Ball detections are rendered from ball-tracking's
+                // smoothed output" requirement - the Ball-specific raw-view/minimap rendering below reads
+                // _lastBallPosition instead of scanning _lastOtherDetections directly; every other non-Player
+                // class still renders straight from _lastOtherDetections, unaffected.
+                _lastBallPosition = _ballTracker.Update(fullFrameResult.Others);
+
                 var trackedColoredCount = trackedPlayers.Count(t => t.Color.HasValue);
                 var trackedSampleColors = string.Join(" ", trackedPlayers.Take(5).Select(t => t.Color is { } c ? $"#{t.TrackId}=({c.R},{c.G},{c.B})" : $"#{t.TrackId}=null"));
                 Console.WriteLine($"[color-debug] tracked={trackedPlayers.Count} trackedColored={trackedColoredCount} rgb={trackedSampleColors}");
@@ -747,6 +767,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
                 // counting this frame against any track's occlusion buffer (tracking/player-tracking spec's
                 // "Advance motion prediction without detection").
                 trackedPlayers = _playerTracker.PredictOnly();
+                _lastBallPosition = _ballTracker.PredictOnly();
             }
         }
         else
@@ -755,13 +776,22 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             // prediction only. The cached non-Player detections, scoreboard region, and keypoints are all
             // reused as-is until their own next respective refresh.
             trackedPlayers = _playerTracker.PredictOnly();
+            _lastBallPosition = _ballTracker.PredictOnly();
         }
 
         _lastTrackedPlayers = trackedPlayers;
 
+        // Ball is excluded here and rendered separately from _lastBallPosition (tracking/ball-tracking's
+        // smoothed/coasted output) instead - every other non-Player class still renders straight from
+        // _lastOtherDetections, unaffected (vision/on-court-object-detection spec).
         var otherAnnotations = _lastOtherDetections
+            .Where(d => d.ClassName != "Ball")
             .Select(d => OverlayAnnotation.ForBox(d.Left, d.Top, d.Right, d.Bottom, d.ClassName, d.ClassName))
             .ToList();
+
+        IReadOnlyList<OverlayAnnotation> ballAnnotations = _lastBallPosition is { } lastBallPosition
+            ? [OverlayAnnotation.ForBox(lastBallPosition.Left, lastBallPosition.Top, lastBallPosition.Right, lastBallPosition.Bottom, "Ball", "Ball")]
+            : [];
 
         var playerAnnotations = trackedPlayers
             .Select(t => OverlayAnnotation.ForBox(t.Left, t.Top, t.Right, t.Bottom, $"#{t.TrackId}"))
@@ -808,7 +838,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             Dispatcher.UIThread.Post(() =>
             {
                 RawOverlay.CurrentFrame = bitmap;
-                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations).Concat(playbackRegionAnnotations));
+                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations).Concat(ballAnnotations).Concat(playbackRegionAnnotations));
             });
             return;
         }
@@ -862,7 +892,7 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             Dispatcher.UIThread.Post(() =>
             {
                 RawOverlay.CurrentFrame = bitmap;
-                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations).Concat(playbackRegionAnnotations));
+                RawOverlay.SetAnnotations(playerAnnotations.Concat(otherAnnotations).Concat(ballAnnotations).Concat(playbackRegionAnnotations));
             });
             return;
         }
@@ -904,26 +934,24 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             // The ball has no "feet" to plant on the court plane, so it's projected from its box center rather
             // than a bottom-center point - an approximation that only holds while the ball is near the floor
             // (e.g. a dribble), but is still the closest single point available without depth information.
-            // _lastOtherDetections can contain multiple Ball detections on a false-positive frame; only the
-            // most confident one is plotted, same "one marker per real-world object" intent as player markers.
-            var ballMarker = _lastOtherDetections
-                .Where(d => d.ClassName == "Ball")
-                .OrderByDescending(d => d.Confidence)
-                .Select(d =>
-                {
-                    var center = new ImagePoint((d.Left + d.Right) / 2, (d.Top + d.Bottom) / 2);
-                    var court = PointProjector.Project(calibration, center);
-                    return new CourtMarker(court.X, court.Y, null, "ball");
-                })
-                .FirstOrDefault();
+            // Sourced from _lastBallPosition (tracking/ball-tracking's smoothed/coasted output) rather than
+            // scanning _lastOtherDetections directly - the tracker already picks the single highest-confidence
+            // Ball detection per attempt internally.
+            CourtMarker? ballMarker = null;
+            if (_lastBallPosition is { } ballPosition)
+            {
+                var center = new ImagePoint((ballPosition.Left + ballPosition.Right) / 2, (ballPosition.Top + ballPosition.Bottom) / 2);
+                var court = PointProjector.Project(calibration, center);
+                ballMarker = new CourtMarker(court.X, court.Y, null, "ball");
+            }
 
-            markers = ballMarker is null ? playerMarkers.ToList() : [.. playerMarkers, ballMarker];
+            markers = ballMarker is { } resolvedBallMarker ? [.. playerMarkers, resolvedBallMarker] : playerMarkers.ToList();
         }
 
         Dispatcher.UIThread.Post(() =>
         {
             RawOverlay.CurrentFrame = bitmap;
-            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypointAnnotations).Concat(otherAnnotations).Concat(playbackRegionAnnotations));
+            RawOverlay.SetAnnotations(playerAnnotations.Concat(keypointAnnotations).Concat(otherAnnotations).Concat(ballAnnotations).Concat(playbackRegionAnnotations));
 
             Minimap.HasValidCalibration = calibration is not null;
             if (currentGeometry is not null)
