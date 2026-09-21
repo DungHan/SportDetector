@@ -39,6 +39,19 @@ public sealed class MainWindowViewModel : IAsyncDisposable
 
     private static readonly TimeSpan KeypointDetectionInterval = TimeSpan.FromMilliseconds(150);
 
+    // Above this cheap masked background-change score (see SceneCutDetector.ComputeBackgroundChangeScore), the
+    // camera itself is judged to have moved enough since the last real keypoint detection to be worth re-running
+    // it - deliberately lower than SceneCutDetector.DefaultChangeThreshold (0.2, "this is a different scene
+    // entirely") since this just needs to catch an ordinary pan/zoom mid-shot, not a hard cut. A placeholder,
+    // not yet empirically tuned against real broadcast footage (same caveat as SceneCutDetector's own threshold).
+    private const double KeypointRefreshChangeThreshold = 0.05;
+
+    // Safety net for keypoint detection's background-change gate below: even if the cheap masked signature never
+    // reports enough change to trigger a refresh (e.g. a very slow drift that never crosses the threshold in one
+    // 150ms tick, or a frame so full of players that ComputeBackgroundChangeScore keeps returning null), force a
+    // real re-detection at least this often so calibration can't go stale indefinitely.
+    private static readonly TimeSpan KeypointDetectionMaxInterval = TimeSpan.FromSeconds(4);
+
     // Sport classification is retried at this cadence (not per-frame - it's a real inference call) for as long
     // as it keeps coming back Unknown, e.g. because the opening frames of a source don't show the court yet.
     private static readonly TimeSpan SportClassificationRetryInterval = TimeSpan.FromMilliseconds(500);
@@ -70,6 +83,9 @@ public sealed class MainWindowViewModel : IAsyncDisposable
     private DateTimeOffset _lastSportClassificationCheckAt;
     private IReadOnlyList<DetectedKeypoint> _lastKeypoints = [];
     private double[]? _lastSceneSignature;
+    private double[]? _lastKeypointSceneSignature;
+    private DateTimeOffset _lastKeypointDetectionAt;
+    private IReadOnlyList<TrackedPlayer> _lastTrackedPlayers = [];
     private IReadOnlyList<OnCourtObjectDetection> _lastOtherDetections = [];
     private NormalizedRect? _lastScoreboardObjectRegion;
     private readonly RelayCommand _reclassifyCommand;
@@ -328,6 +344,27 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             (byte)Math.Clamp(Math.Round(nearest.B), 0, 255));
     }
 
+    // Shared tail of both keypoint-detection paths (the synchronous cold-start one and the deferred/concurrent
+    // one) - offsets the raw detector output back into full-frame coordinates, stores it as _lastKeypoints, and
+    // attempts recalibration from it. TryCalibrateFromKeypoints only overwrites the persisted calibration on
+    // success (not enough/too-clustered keypoints this attempt just fails without touching it), so a frame
+    // where the court is briefly out of view still keeps projecting off the last good fit rather than losing
+    // calibration entirely.
+    private void ApplyKeypointDetectionResult(
+        IReadOnlyList<DetectedKeypoint> detectedKeypoints, CroppedFrame? crop, string sourceKey, SportType sport, long sequence, long elapsedMs)
+    {
+        _lastKeypoints = crop is { } c
+            ? detectedKeypoints.Select(k => OffsetToFullFrame(k, c.Left, c.Top)).ToList()
+            : detectedKeypoints;
+        Console.WriteLine($"[perf#{sequence}] keypoints={elapsedMs}ms");
+
+        var calibrationAttempt = _calibrationCoordinator.TryCalibrateFromKeypoints(sourceKey, sport, _lastKeypoints);
+        if (!calibrationAttempt.Success)
+        {
+            Console.WriteLine($"[auto-calibrate] {calibrationAttempt.FailureReason}");
+        }
+    }
+
     private static PlayerDetection OffsetToFullFrame(PlayerDetection detection, int left, int top) =>
         new(detection.Left + left, detection.Top + top, detection.Right + left, detection.Bottom + top, detection.Confidence, detection.Color);
 
@@ -456,29 +493,47 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         var sport = SportIndicator.Current?.Sport;
         var isConfidentSport = sport is not null && SportIndicator.Current!.Status == SportClassificationStatus.Confident;
 
-        // Keypoint detection runs here, ahead of player detection, so RequireKeypointsBeforeObjectDetection
-        // below can see this frame's freshest result rather than one that's a whole detection pass stale.
-        // Throttled to ~6.7Hz (every 150ms) via a wall-clock timer, a separate cadence from player detection's
-        // frame-count-based one below - the court's keypoints only move when the camera pans/zooms/cuts, so
-        // re-running the ONNX inference on every single frame is wasted work. Between checks, the last
-        // detected keypoints are reused so the gate below and the overlay/minimap don't flicker on skipped
-        // frames.
+        // The court's keypoints only move when the camera pans/zooms/cuts - most frames, the camera is static
+        // and _lastKeypoints from an earlier tick is still perfectly valid, so this block's job is deciding
+        // *whether* a re-detection is even worth running, not running it. The actual (expensive) ONNX pass, if
+        // needed, is deferred to the combined concurrent-detection block below so it can overlap with player/
+        // ball detection instead of stalling in front of them. This decision itself is still throttled to
+        // ~6.7Hz (every 150ms) via a wall-clock timer, a separate cadence from player detection's frame-count-
+        // based one below - it's cheap enough (a coarse grid-sampled color signature) to run at that cadence
+        // regardless of whether it ends up triggering anything.
+        var needsKeypointRefresh = false;
+        string? keypointSourceKey = null;
         if (isConfidentSport && _currentSourceKey is { } sourceKeyForKeypoints
             && frame.Timestamp - _lastKeypointCheckAt >= KeypointDetectionInterval)
         {
             _lastKeypointCheckAt = frame.Timestamp;
-            var keypointStopwatch = Stopwatch.StartNew();
+            keypointSourceKey = sourceKeyForKeypoints;
+
+            var sceneCropForSignature = playbackCrop;
+            var signatureWidth = sceneCropForSignature?.Width ?? frame.Width;
+            var signatureHeight = sceneCropForSignature?.Height ?? frame.Height;
+            var sceneSignature = sceneCropForSignature is { } sceneCrop
+                ? SceneCutDetector.ComputeGridSignature(sceneCrop.Pixels, sceneCrop.Width, sceneCrop.Height, sceneCrop.Stride)
+                : SceneCutDetector.ComputeGridSignature(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+
+            // Masks out cells covered by last frame's tracked player boxes (converted into this signature's own
+            // pixel space - crop-local when a playback crop is active) so a player sprinting across the court
+            // is never mistaken for the camera itself moving, below.
+            var maskBoxes = sceneCropForSignature is { } maskCrop
+                ? _lastTrackedPlayers.Select(t => (t.Left - maskCrop.Left, t.Top - maskCrop.Top, t.Right - maskCrop.Left, t.Bottom - maskCrop.Top)).ToList()
+                : _lastTrackedPlayers.Select(t => (t.Left, t.Top, t.Right, t.Bottom)).ToList();
+            var cellMask = SceneCutDetector.ComputeCellMask(maskBoxes, signatureWidth, signatureHeight);
 
             // A hard scene/camera cut (e.g. a highlight reel cutting to a different game/arena/camera angle
             // within the same continuous capture source) means any calibration already saved for this source
             // was fit against a court framing that no longer matches what's on screen - reusing it would keep
             // projecting players to nonsensical minimap positions indefinitely, since GetValidCalibration below
             // has no way to tell the homography is stale on its own. Checked on the same buffer and cadence as
-            // keypoint detection, since that's the only consumer that cares.
-            var sceneSignature = playbackCrop is { } sceneCrop
-                ? SceneCutDetector.ComputeGridSignature(sceneCrop.Pixels, sceneCrop.Width, sceneCrop.Height, sceneCrop.Stride)
-                : SceneCutDetector.ComputeGridSignature(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-            if (_lastSceneSignature is { } previousSceneSignature && SceneCutDetector.IsCut(previousSceneSignature, sceneSignature))
+            // this whole block.
+            var frameToFrameChange = _lastSceneSignature is { } previousSceneSignature
+                ? SceneCutDetector.ComputeBackgroundChangeScore(previousSceneSignature, sceneSignature, cellMask)
+                : null;
+            if (frameToFrameChange is { } frameChange && frameChange > SceneCutDetector.DefaultChangeThreshold)
             {
                 _calibrationCoordinator.Invalidate(sourceKeyForKeypoints);
 
@@ -491,36 +546,56 @@ public sealed class MainWindowViewModel : IAsyncDisposable
             }
             _lastSceneSignature = sceneSignature;
 
-            try
-            {
-                _lastKeypoints = playbackCrop is { } crop
-                    ? _keypointDetector.Detect(crop.Pixels, crop.Width, crop.Height, crop.Stride)
-                        .Select(k => OffsetToFullFrame(k, crop.Left, crop.Top))
-                        .ToList()
-                    : _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[keypoint-detect] detection failed for this frame, treating as none: {ex.Message}");
-                _lastKeypoints = [];
-            }
+            // Broadcast camera work pans/zooms/tilts continuously *within* a single source, not just at hard
+            // cuts, so a homography computed once from this source's first framing goes stale as soon as the
+            // camera moves. Compared against the signature as of the *last actual keypoint detection* (not just
+            // the previous tick), so slow drift that's individually below KeypointRefreshChangeThreshold each
+            // tick still accumulates into a refresh once it adds up. A null score (too few background cells left
+            // unmasked - e.g. a fast break spreading players across most of the court) is deliberately treated
+            // as "no signal" rather than "changed" - KeypointDetectionMaxInterval below is the safety net for
+            // that case instead.
+            var backgroundChangeSinceLastDetection = _lastKeypointSceneSignature is { } lastDetectionSignature
+                ? SceneCutDetector.ComputeBackgroundChangeScore(lastDetectionSignature, sceneSignature, cellMask)
+                : null;
+            var cameraLikelyMoved = backgroundChangeSinceLastDetection is { } score && score > KeypointRefreshChangeThreshold;
 
-            // Broadcast camera work pans/zooms/tilts continuously *within* a single source - not just at hard
-            // cuts (SceneCutDetector only catches those) - so a homography computed once from this source's
-            // first framing goes stale as soon as the camera moves, well before anything looks like a "cut" to
-            // that detector. Re-attempted on every keypoint-detection tick, regardless of whether a calibration
-            // is already persisted, so the homography continuously tracks the live camera framing instead of
-            // freezing on the first one. TryCalibrateFromKeypoints only overwrites the persisted calibration on
-            // success (not enough/too-clustered keypoints this tick just fails without touching it), so a
-            // frame where the court is briefly out of view still keeps projecting off the last good fit rather
-            // than losing calibration entirely.
-            var calibrationAttempt = _calibrationCoordinator.TryCalibrateFromKeypoints(sourceKeyForKeypoints, sport!.Value, _lastKeypoints);
-            if (!calibrationAttempt.Success)
-            {
-                Console.WriteLine($"[auto-calibrate] {calibrationAttempt.FailureReason}");
-            }
+            // A cold start (or every attempt so far has failed) has no "last known good" keypoints to fall
+            // back on, so RequireKeypointsBeforeObjectDetection just below - which reads _lastKeypoints
+            // synchronously, this same tick - would otherwise always see an empty result and permanently block
+            // player detection. Detected synchronously here (not deferred into the concurrent block below like
+            // every other refresh) specifically so this tick's gate check can see it; every later refresh,
+            // once there's a non-empty fallback to coast on while the detection runs, can safely overlap with
+            // player/ball detection instead.
+            var isColdStart = _lastKeypoints.Count == 0;
+            needsKeypointRefresh = !isColdStart
+                && (_lastKeypointSceneSignature is null
+                    || cameraLikelyMoved
+                    || frame.Timestamp - _lastKeypointDetectionAt >= KeypointDetectionMaxInterval);
 
-            Console.WriteLine($"[perf#{sequence}] keypoints={keypointStopwatch.ElapsedMilliseconds}ms");
+            if (isColdStart)
+            {
+                var keypointStopwatch = Stopwatch.StartNew();
+                try
+                {
+                    var detected = sceneCropForSignature is { } detectCrop
+                        ? _keypointDetector.Detect(detectCrop.Pixels, detectCrop.Width, detectCrop.Height, detectCrop.Stride)
+                        : _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+                    ApplyKeypointDetectionResult(detected, sceneCropForSignature, sourceKeyForKeypoints, sport!.Value, sequence, keypointStopwatch.ElapsedMilliseconds);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[keypoint-detect] detection failed for this frame, treating as none: {ex.Message}");
+                    _lastKeypoints = [];
+                }
+
+                _lastKeypointDetectionAt = frame.Timestamp;
+                _lastKeypointSceneSignature = sceneSignature;
+            }
+            else if (needsKeypointRefresh)
+            {
+                _lastKeypointDetectionAt = frame.Timestamp;
+                _lastKeypointSceneSignature = sceneSignature;
+            }
         }
 
         // Opt-in (off by default - see KeypointDetectionSettingsViewModel.RequireKeypointsBeforeObjectDetection):
@@ -551,93 +626,138 @@ public sealed class MainWindowViewModel : IAsyncDisposable
         _frameCounter++;
 
         IReadOnlyList<TrackedPlayer> trackedPlayers;
-        if (isDetectionFrame)
+        if (isDetectionFrame || needsKeypointRefresh)
         {
-            var detectStopwatch = Stopwatch.StartNew();
+            // Player/ball/keypoint detection are three independent inference passes over three separate
+            // sessions with no shared state between them (each its own forward pass at its own input
+            // resolution - see models/README.md) - only the subset actually due this frame is started (the two
+            // gates above are on independent cadences: frame-count for player/ball, camera-motion for
+            // keypoints, so most frames only need one of the two groups below, not both), and whichever subset
+            // does run is run concurrently rather than sequentially, so this stage's wall-clock cost is roughly
+            // max(playerMs, ballMs, keypointMs) instead of their sum. ProcessFrame itself is synchronous, so
+            // this still blocks here until everything started finishes; only the Detect() calls themselves
+            // overlap.
+            Task<MultiClassDetectionResult>? playerTask = null;
+            Task<MultiClassDetectionResult>? ballTask = null;
+            Task<(IReadOnlyList<DetectedKeypoint> Keypoints, long ElapsedMs)>? keypointTask = null;
 
-            // Two separate inference passes, over two separate trained models: _multiClassObjectDetector
-            // (Player/Ref) and _ballDetector (Ball-only) - the player-detection export no longer includes a
-            // "Ball" class, so there's no longer a single shared model both can come from. Both results come
-            // back in the crop's own pixel space (or full-frame space when no crop is active), the same
-            // reference space NormalizedRect.DefaultScoreboardRegion/SourceProfile.ScoreboardRegion are already
-            // normalized against - so the scoreboard-region computation just below reads the merged result
-            // before it's offset to full-frame coordinates for the tracker/overlay uses further down.
-            MultiClassDetectionResult detectionResult;
-            try
+            if (isDetectionFrame)
             {
-                // Two independent models/sessions with no shared state between them (each a full YOLOv8m
-                // forward pass at its own input resolution - see models/README.md) - run concurrently instead
-                // of sequentially so this stage's wall-clock cost is roughly max(playerMs, ballMs) instead of
-                // their sum. ProcessFrame itself is synchronous, so this still blocks here until both finish;
-                // only the two Detect() calls themselves overlap.
-                var playerTask = Task.Run(() => playbackCrop is { } playerCrop
+                playerTask = Task.Run(() => playbackCrop is { } playerCrop
                     ? _multiClassObjectDetector.Detect(playerCrop.Pixels, playerCrop.Width, playerCrop.Height, playerCrop.Stride)
                     : _multiClassObjectDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride));
-                var ballTask = Task.Run(() => playbackCrop is { } ballCrop
+                ballTask = Task.Run(() => playbackCrop is { } ballCrop
                     ? _ballDetector.Detect(ballCrop.Pixels, ballCrop.Width, ballCrop.Height, ballCrop.Stride)
                     : _ballDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride));
-                Task.WaitAll(playerTask, ballTask);
-                var playerResult = playerTask.Result;
-                var ballResult = ballTask.Result;
+            }
 
-                detectionResult = new MultiClassDetectionResult(
-                    playerResult.Players,
-                    [.. playerResult.Others, .. ballResult.Others]);
-
-                var coloredCount = detectionResult.Players.Count(p => p.Color.HasValue);
-                var sampleColors = string.Join(" ", detectionResult.Players.Take(5).Select(p => p.Color is { } c ? $"({c.R},{c.G},{c.B})" : "null"));
-                Console.WriteLine($"[color-debug] players={detectionResult.Players.Count} colored={coloredCount} cropped={(playbackCrop is not null)} rgb={sampleColors}");
-
-                if (playbackCrop is { } dumpCrop && _colorDebugDumpCount < 2)
+            if (needsKeypointRefresh)
+            {
+                keypointTask = Task.Run(() =>
                 {
-                    _colorDebugDumpCount++;
-                    DumpColorDebugImages(dumpCrop, playerResult.Players);
+                    var keypointStopwatch = Stopwatch.StartNew();
+                    var result = playbackCrop is { } keypointCrop
+                        ? _keypointDetector.Detect(keypointCrop.Pixels, keypointCrop.Width, keypointCrop.Height, keypointCrop.Stride)
+                        : _keypointDetector.Detect(frame.Pixels.Span, frame.Width, frame.Height, frame.Stride);
+                    return (result, keypointStopwatch.ElapsedMilliseconds);
+                });
+            }
+
+            var detectStopwatch = Stopwatch.StartNew();
+            MultiClassDetectionResult detectionResult = new(Players: [], Others: []);
+            if (playerTask is not null && ballTask is not null)
+            {
+                try
+                {
+                    Task.WaitAll(playerTask, ballTask);
+                    var playerResult = playerTask.Result;
+                    var ballResult = ballTask.Result;
+
+                    detectionResult = new MultiClassDetectionResult(
+                        playerResult.Players,
+                        [.. playerResult.Others, .. ballResult.Others]);
+
+                    var coloredCount = detectionResult.Players.Count(p => p.Color.HasValue);
+                    var sampleColors = string.Join(" ", detectionResult.Players.Take(5).Select(p => p.Color is { } c ? $"({c.R},{c.G},{c.B})" : "null"));
+                    Console.WriteLine($"[color-debug] players={detectionResult.Players.Count} colored={coloredCount} cropped={(playbackCrop is not null)} rgb={sampleColors}");
+
+                    if (playbackCrop is { } dumpCrop && _colorDebugDumpCount < 2)
+                    {
+                        _colorDebugDumpCount++;
+                        DumpColorDebugImages(dumpCrop, playerResult.Players);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Task.WaitAll wraps a faulted task's exception in an AggregateException - unwrap it so this
+                    // log line still names the actual failure instead of "One or more errors occurred.".
+                    var message = ex is AggregateException aggregate ? aggregate.InnerException?.Message ?? ex.Message : ex.Message;
+                    Console.WriteLine($"[player-detect] detection failed for this frame, treating as none: {message}");
+                    detectionResult = new MultiClassDetectionResult(Players: [], Others: []);
                 }
             }
-            catch (Exception ex)
+
+            if (keypointTask is not null)
             {
-                // Task.WaitAll wraps a faulted task's exception in an AggregateException - unwrap it so this
-                // log line still names the actual failure instead of "One or more errors occurred.".
-                var message = ex is AggregateException aggregate ? aggregate.InnerException?.Message ?? ex.Message : ex.Message;
-                Console.WriteLine($"[player-detect] detection failed for this frame, treating as none: {message}");
-                detectionResult = new MultiClassDetectionResult(Players: [], Others: []);
+                try
+                {
+                    var (detectedKeypoints, keypointElapsedMs) = keypointTask.GetAwaiter().GetResult();
+                    ApplyKeypointDetectionResult(detectedKeypoints, playbackCrop, keypointSourceKey!, sport!.Value, sequence, keypointElapsedMs);
+                }
+                catch (Exception ex)
+                {
+                    var message = ex is AggregateException aggregate ? aggregate.InnerException?.Message ?? ex.Message : ex.Message;
+                    Console.WriteLine($"[keypoint-detect] detection failed for this frame, treating as none: {message}");
+                    _lastKeypoints = [];
+                }
             }
 
-            // Overwritten only when this frame actually has a scoreboard-related detection - otherwise the
-            // previously cached region (if any) keeps being used (design.md's "no explicit staleness expiry").
-            var scoreboardCandidates = detectionResult.Others.Where(d => ScoreboardRelatedClassNames.Contains(d.ClassName)).ToList();
-            if (scoreboardCandidates.Count > 0)
+            if (isDetectionFrame)
             {
-                var referenceWidth = playbackCrop?.Width ?? frame.Width;
-                var referenceHeight = playbackCrop?.Height ?? frame.Height;
-                _lastScoreboardObjectRegion = ComputeNormalizedUnion(scoreboardCandidates, referenceWidth, referenceHeight);
+                // Overwritten only when this frame actually has a scoreboard-related detection - otherwise the
+                // previously cached region (if any) keeps being used (design.md's "no explicit staleness expiry").
+                var scoreboardCandidates = detectionResult.Others.Where(d => ScoreboardRelatedClassNames.Contains(d.ClassName)).ToList();
+                if (scoreboardCandidates.Count > 0)
+                {
+                    var referenceWidth = playbackCrop?.Width ?? frame.Width;
+                    var referenceHeight = playbackCrop?.Height ?? frame.Height;
+                    _lastScoreboardObjectRegion = ComputeNormalizedUnion(scoreboardCandidates, referenceWidth, referenceHeight);
+                }
+
+                var fullFrameResult = playbackCrop is { } offsetCrop
+                    ? OffsetToFullFrame(detectionResult, offsetCrop.Left, offsetCrop.Top)
+                    : detectionResult;
+
+                // Detections are fed through the tracker to attach a stable track ID per player (tracking/player-tracking
+                // spec) before rendering, so the same physical player keeps the same box/ID across frames instead of an
+                // unlabeled per-frame foot-point.
+                trackedPlayers = _playerTracker.Update(fullFrameResult.Players);
+                _lastOtherDetections = fullFrameResult.Others;
+
+                var trackedColoredCount = trackedPlayers.Count(t => t.Color.HasValue);
+                var trackedSampleColors = string.Join(" ", trackedPlayers.Take(5).Select(t => t.Color is { } c ? $"#{t.TrackId}=({c.R},{c.G},{c.B})" : $"#{t.TrackId}=null"));
+                Console.WriteLine($"[color-debug] tracked={trackedPlayers.Count} trackedColored={trackedColoredCount} rgb={trackedSampleColors}");
+
+                Console.WriteLine($"[perf#{sequence}] detect={detectStopwatch.ElapsedMilliseconds}ms players={fullFrameResult.Players.Count}");
             }
-
-            var fullFrameResult = playbackCrop is { } offsetCrop
-                ? OffsetToFullFrame(detectionResult, offsetCrop.Left, offsetCrop.Top)
-                : detectionResult;
-
-            // Detections are fed through the tracker to attach a stable track ID per player (tracking/player-tracking
-            // spec) before rendering, so the same physical player keeps the same box/ID across frames instead of an
-            // unlabeled per-frame foot-point.
-            trackedPlayers = _playerTracker.Update(fullFrameResult.Players);
-            _lastOtherDetections = fullFrameResult.Others;
-
-            var trackedColoredCount = trackedPlayers.Count(t => t.Color.HasValue);
-            var trackedSampleColors = string.Join(" ", trackedPlayers.Take(5).Select(t => t.Color is { } c ? $"#{t.TrackId}=({c.R},{c.G},{c.B})" : $"#{t.TrackId}=null"));
-            Console.WriteLine($"[color-debug] tracked={trackedPlayers.Count} trackedColored={trackedColoredCount} rgb={trackedSampleColors}");
-
-            Console.WriteLine($"[perf#{sequence}] detect={detectStopwatch.ElapsedMilliseconds}ms players={fullFrameResult.Players.Count}");
+            else
+            {
+                // No player/ball detection was due this frame (only the keypoint refresh above was) - advance
+                // motion prediction only, so tracked boxes keep moving smoothly instead of freezing, without
+                // counting this frame against any track's occlusion buffer (tracking/player-tracking spec's
+                // "Advance motion prediction without detection").
+                trackedPlayers = _playerTracker.PredictOnly();
+            }
         }
         else
         {
-            // No detection was attempted this frame - advance motion prediction only, so tracked boxes keep
-            // moving smoothly instead of freezing, without counting this frame against any track's occlusion
-            // buffer (tracking/player-tracking spec's "Advance motion prediction without detection"). The
-            // cached non-Player detections and scoreboard region are reused as-is until the next detection
-            // frame, the same posture _lastKeypoints already has below.
+            // Neither player/ball detection nor a keypoint refresh was due this frame - advance motion
+            // prediction only. The cached non-Player detections, scoreboard region, and keypoints are all
+            // reused as-is until their own next respective refresh.
             trackedPlayers = _playerTracker.PredictOnly();
         }
+
+        _lastTrackedPlayers = trackedPlayers;
 
         var otherAnnotations = _lastOtherDetections
             .Select(d => OverlayAnnotation.ForBox(d.Left, d.Top, d.Right, d.Bottom, d.ClassName, d.ClassName))

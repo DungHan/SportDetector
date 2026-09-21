@@ -350,9 +350,13 @@ public class MainWindowViewModelTests : IDisposable
         var firstMarker = Assert.Single(viewModel.Minimap.Markers, m => m.StyleKey == "player");
 
         // Same landmarks, different image-space positions - as if the camera panned - published past
-        // KeypointDetectionInterval so the second tick's keypoint/calibration check actually runs.
+        // KeypointDetectionMaxInterval so the second tick's keypoint/calibration check re-detects unconditionally
+        // (this test's synthetic frame is pixel-identical between ticks - only the stub's returned keypoints
+        // differ - so the cheap background-change heuristic that normally gates re-detection would never fire on
+        // its own; the safety-net max interval is what forces the re-detection here, standing in for whatever
+        // pixel-level change a real camera pan would produce).
         keypointDetector.Keypoints = PannedCorrespondences().Select(c => new DetectedKeypoint(c.LandmarkName, c.Image, 0.99f)).ToList();
-        frameSource.PublishFrame(MakeFrame(t0 + TimeSpan.FromMilliseconds(200)));
+        frameSource.PublishFrame(MakeFrame(t0 + TimeSpan.FromSeconds(5)));
         Avalonia.Threading.Dispatcher.UIThread.RunJobs();
 
         var pannedCalibration = new CourtCalibrationCoordinator(store).GetValidCalibration(sourceKey, SportType.Basketball);

@@ -87,4 +87,81 @@ public static class SceneCutDetector
 
         return (sumAbsoluteDifference / previousSignature.Length) > changeThreshold;
     }
+
+    /// <summary>
+    /// Marks which grid cells fall inside any of <paramref name="boxesInPixels"/> (e.g. currently-tracked player
+    /// boxes, in the same pixel space this call's <paramref name="width"/>/<paramref name="height"/> describe -
+    /// crop-local when a playback crop is active) - a cell counts as covered if its center point lands inside
+    /// any box. Feeds <see cref="ComputeBackgroundChangeScore"/> so a player moving through the frame doesn't
+    /// get mistaken for the camera itself moving (see MainWindowViewModel's keypoint-refresh gate).
+    /// </summary>
+    public static bool[] ComputeCellMask(IReadOnlyList<(double Left, double Top, double Right, double Bottom)> boxesInPixels, int width, int height)
+    {
+        var mask = new bool[GridSize * GridSize];
+        if (boxesInPixels.Count == 0)
+        {
+            return mask;
+        }
+
+        for (var cellY = 0; cellY < GridSize; cellY++)
+        {
+            var cy = ((cellY + 0.5) * height) / GridSize;
+            for (var cellX = 0; cellX < GridSize; cellX++)
+            {
+                var cx = ((cellX + 0.5) * width) / GridSize;
+                for (var i = 0; i < boxesInPixels.Count; i++)
+                {
+                    var box = boxesInPixels[i];
+                    if (cx >= box.Left && cx < box.Right && cy >= box.Top && cy < box.Bottom)
+                    {
+                        mask[(cellY * GridSize) + cellX] = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        return mask;
+    }
+
+    /// <summary>
+    /// Same mean per-channel absolute difference as <see cref="IsCut"/>'s internal comparison, but restricted to
+    /// cells <paramref name="mask"/> marks as background (false) - so known player-occupied cells (see
+    /// <see cref="ComputeCellMask"/>) never contribute to the score. Returns null rather than a misleadingly
+    /// confident number when fewer than <paramref name="minUnmaskedCellFraction"/> of the grid's cells are
+    /// unmasked (e.g. a fast break spreading players across most of the court) - too few background samples left
+    /// to trust either way; the caller should fall back to its own safety-net logic rather than treat null as
+    /// "no change".
+    /// </summary>
+    public static double? ComputeBackgroundChangeScore(
+        double[] previousSignature, double[] currentSignature, bool[] mask, double minUnmaskedCellFraction = 0.3)
+    {
+        if (previousSignature.Length != currentSignature.Length)
+        {
+            throw new ArgumentException("Signatures must come from the same grid size to be comparable.");
+        }
+
+        var unmaskedCells = 0;
+        var sumAbsoluteDifference = 0.0;
+        for (var cell = 0; cell < mask.Length; cell++)
+        {
+            if (mask[cell])
+            {
+                continue;
+            }
+
+            unmaskedCells++;
+            var baseIndex = cell * 3;
+            sumAbsoluteDifference += Math.Abs(previousSignature[baseIndex] - currentSignature[baseIndex])
+                + Math.Abs(previousSignature[baseIndex + 1] - currentSignature[baseIndex + 1])
+                + Math.Abs(previousSignature[baseIndex + 2] - currentSignature[baseIndex + 2]);
+        }
+
+        if (unmaskedCells < mask.Length * minUnmaskedCellFraction)
+        {
+            return null;
+        }
+
+        return sumAbsoluteDifference / (unmaskedCells * 3);
+    }
 }
